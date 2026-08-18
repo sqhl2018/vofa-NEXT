@@ -1,4 +1,4 @@
-import type { DataFrame, RawDataBatch, WaveformWindow } from '../../types';
+import type { DataFrame, RawDataBatch, RawDataDirection, WaveformWindow } from '../../types';
 import { createFrameBatcher } from '../utils/frameBatcher';
 
 export const RAWDATA_BYTES_PER_ROW = 16;
@@ -17,6 +17,7 @@ function decodeBase64(b64: string): Uint8Array {
 export interface RawDataLineView {
   offset: number;
   timestamp: number;
+  direction: RawDataDirection;
   bytes: Uint8Array;
 }
 
@@ -91,14 +92,37 @@ class WaveformWindowCache {
 /// 全局波形窗口缓存
 export const waveformWindow = new WaveformWindowCache();
 
-/// 分片元数据 — 用于把字节偏移映射到时间戳
-interface ChunkEntry {
+/// 分片元数据 — 用于把字节偏移映射到时间戳与方向
+export interface ChunkEntry {
   /// 该分片第一个字节在全局字节流中的偏移
   offset: number;
   /// 分片长度 (字节)
   length: number;
   /// 微秒时间戳
   timestamp_us: number;
+  /// 数据方向
+  direction: RawDataDirection;
+}
+
+/// 原始数据行读取接口 — RawDataView 渲染所需的最小契约
+/// RawDataBuffer (全量) 与 FilteredRawDataBuffer (方向/搜索过滤) 均实现
+export interface RawDataLineSource {
+  /// 网格模式行数 (每 16 字节一行)
+  readonly lineCount: number;
+  /// 换行模式行数 (0x0A 分隔)
+  readonly newlineLineCount: number;
+  /// 获取网格模式指定行
+  getLine(rowIndex: number): RawDataLineView;
+  /// 获取换行模式指定行
+  getNewlineLine(rowIndex: number): RawDataLineView;
+  /// 累计字节数 (含已丢弃)
+  readonly totalBytes: number;
+  /// 累计丢弃字节数
+  readonly droppedBytes: number;
+  /// 订阅数据变化 (RAF 节流后触发)
+  subscribe(fn: () => void): () => void;
+  /// 清空视图 (过滤缓冲只清自身索引, 不影响源)
+  clear(): void;
 }
 
 /// 原始数据缓冲区 — 基于 Uint8Array 的环形缓冲区
@@ -156,6 +180,7 @@ export class RawDataBuffer {
         offset: startOffset,
         length: n,
         timestamp_us: chunk.timestamp_us,
+        direction: chunk.direction ?? 'rx',
       });
     }
     // 限制分片索引数量, 避免无限增长
@@ -183,6 +208,17 @@ export class RawDataBuffer {
     return Math.min(this.totalWritten, this.capacity);
   }
 
+  /// 累计写入字节数 (绝对偏移空间; 最早保留偏移 = max(0, writtenTotal - storedBytes))
+  get writtenTotal(): number {
+    return this.totalWritten;
+  }
+
+  /// 分片元数据 (只读引用, 按 offset 递增) — 供过滤视图做增量索引
+  /// 调用方不得修改返回数组及其元素
+  getChunkEntries(): readonly ChunkEntry[] {
+    return this.chunks;
+  }
+
   /// 总行数 (每 16 字节一行)
   get lineCount(): number {
     return Math.ceil(this.storedBytes / RAWDATA_BYTES_PER_ROW);
@@ -205,6 +241,7 @@ export class RawDataBuffer {
     return {
       offset: lineStart,
       timestamp: this.getTimeForOffset(lineStart),
+      direction: this.getDirectionForOffset(lineStart),
       bytes,
     };
   }
@@ -220,7 +257,8 @@ export class RawDataBuffer {
   }
 
   /// 复制绝对偏移 [startOffset, endOffset) 区间的环形字节 (定位方式与 getLine 一致)
-  private readRange(startOffset: number, endOffset: number): Uint8Array {
+  /// 调用方需保证区间落在当前保留窗口内 (startOffset >= writtenTotal - storedBytes)
+  readBytesAt(startOffset: number, endOffset: number): Uint8Array {
     const length = Math.max(0, endOffset - startOffset);
     const bytes = new Uint8Array(length);
     if (length === 0) return bytes;
@@ -284,14 +322,15 @@ export class RawDataBuffer {
   getNewlineLine(rowIndex: number): RawDataLineView {
     if (this.lineIndexDirty) this.rebuildLineIndex();
     if (rowIndex < 0 || rowIndex >= this.lineStarts.length) {
-      return { offset: this.totalWritten, timestamp: this.getTimeForOffset(this.totalWritten), bytes: new Uint8Array(0) };
+      return { offset: this.totalWritten, timestamp: this.getTimeForOffset(this.totalWritten), direction: 'rx', bytes: new Uint8Array(0) };
     }
     const start = this.lineStarts[rowIndex];
     const end = rowIndex + 1 < this.lineStarts.length ? this.lineStarts[rowIndex + 1] : this.totalWritten;
     return {
       offset: start,
       timestamp: this.getTimeForOffset(start),
-      bytes: this.readRange(start, end),
+      direction: this.getDirectionForOffset(start),
+      bytes: this.readBytesAt(start, end),
     };
   }
 
@@ -319,6 +358,32 @@ export class RawDataBuffer {
       else break;
     }
     return Math.floor(candidate.timestamp_us / 1000);
+  }
+
+  /** 查找给定字节偏移对应的数据方向 */
+  private getDirectionForOffset(offset: number): RawDataDirection {
+    if (this.chunks.length === 0) return 'rx';
+    let lo = 0;
+    let hi = this.chunks.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const chunk = this.chunks[mid];
+      if (offset >= chunk.offset && offset < chunk.offset + chunk.length) {
+        return chunk.direction;
+      }
+      if (offset < chunk.offset) {
+        hi = mid - 1;
+      } else {
+        lo = mid + 1;
+      }
+    }
+    // 未精确命中则返回最近的前一个分片方向
+    let candidate = this.chunks[0];
+    for (const chunk of this.chunks) {
+      if (chunk.offset <= offset) candidate = chunk;
+      else break;
+    }
+    return candidate.direction;
   }
 
   /// 累计字节数 (含已丢弃)

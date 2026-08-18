@@ -1,6 +1,24 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { RawDataBatch } from '../../types';
+import type { RawDataBatch, RawDataDirection } from '../../types';
 import { makeOrderedSink, subscribeSharded } from './shardedSubscription';
+import { tickMetric } from '../utils/perfLog';
+
+export type DirectionFilter = 'all' | RawDataDirection;
+
+export interface RawDataFilterOptions {
+  directionFilter: DirectionFilter;
+  searchTerm: string;
+}
+
+/// 统计 base64 载荷字节速率 (解码前)
+function countBytes(key: string, onEvent: (batch: RawDataBatch) => void) {
+  return (batch: RawDataBatch) => {
+    let bytes = 0;
+    for (const c of batch.chunks) bytes += c.bytes_b64.length;
+    tickMetric(key, bytes);
+    onEvent(batch);
+  };
+}
 
 /// 订阅原始数据 — 统一分片流 (增量 drain + 自动并发分片)
 ///
@@ -15,7 +33,7 @@ export function subscribeRawData(
     'subscribe_rawdata',
     'unsubscribe_rawdata',
     {},
-    makeOrderedSink(onEvent),
+    makeOrderedSink(countBytes('rawdata:global', onEvent)),
     { intervalMs: options?.intervalMs, maxBytes: options?.maxBytes }
   );
 }
@@ -31,6 +49,46 @@ export function subscribeRawDataNode(
     'subscribe_rawdata_node',
     'unsubscribe_rawdata_node',
     { nodeId },
+    makeOrderedSink(onEvent),
+    { intervalMs: options?.intervalMs, maxBytes: options?.maxBytes }
+  );
+}
+
+/// 订阅带方向与搜索过滤的原始数据 — 统一分片流
+///
+/// 后端只推送方向匹配且包含搜索模式的 chunk, 前端无需再遍历过滤。
+export function subscribeRawDataFiltered(
+  filter: RawDataFilterOptions,
+  onEvent: (batch: RawDataBatch) => void,
+  options?: { intervalMs?: number; maxBytes?: number }
+): { cancel: () => void } {
+  return subscribeSharded<RawDataBatch>(
+    'subscribe_rawdata_filtered',
+    'unsubscribe_rawdata',
+    {
+      direction: filter.directionFilter,
+      search: filter.searchTerm,
+    },
+    makeOrderedSink(countBytes('rawdata:filtered', onEvent)),
+    { intervalMs: options?.intervalMs, maxBytes: options?.maxBytes }
+  );
+}
+
+/// 订阅带方向与搜索过滤的节点原始数据 — 统一分片流
+export function subscribeRawDataNodeFiltered(
+  nodeId: string,
+  filter: RawDataFilterOptions,
+  onEvent: (batch: RawDataBatch) => void,
+  options?: { intervalMs?: number; maxBytes?: number }
+): { cancel: () => void } {
+  return subscribeSharded<RawDataBatch>(
+    'subscribe_rawdata_node_filtered',
+    'unsubscribe_rawdata_node',
+    {
+      nodeId,
+      direction: filter.directionFilter,
+      search: filter.searchTerm,
+    },
     makeOrderedSink(onEvent),
     { intervalMs: options?.intervalMs, maxBytes: options?.maxBytes }
   );

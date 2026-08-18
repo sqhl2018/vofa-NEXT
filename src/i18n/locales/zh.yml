@@ -166,6 +166,10 @@ sendPanelMode: 发送面板
 sendPanelBottom: 底部
 sendPanelSeparate: 右侧
 rawDataEmpty: 暂无原始数据
+rawDataDirectionAll: 全部
+rawDataDirectionRx: 接收
+rawDataDirectionTx: 发送
+rawDataSearchPlaceholder: 搜索...
 displayOptions: 显示选项
 
 # 节点编辑器
@@ -338,6 +342,8 @@ templateMath: 数学
 templateMathDesc: 演示 sin / 求和等算术节点，配 TestData 无需硬件即可运行
 templateFilter: 滤波器
 templateFilterDesc: 低通滤波演示，对比原始与滤波后波形
+templateFft: 频谱分析
+templateFftDesc: FFT 求解器 → 频谱仪 → IFFT 重建回时域，演示时域/频域端口连线（TestData 无需硬件）
 templateCan: CAN
 templateCanDesc: Slcan 传输 + CAN 帧视图，连接 CAN 分析仪即可收发
 templateSerial: 串口
@@ -370,6 +376,8 @@ settingDebugDesc: 开启后在右键菜单中显示检查元素等调试功能
 settingTheme: 主题
 settingThemeDesc: 应用配色方案
 settingThemeEdit: 编辑主题
+colorTheme: 颜色主题
+cssTheme: CSS样式主题
 
 # 主题编辑器
 themeEditor: 主题编辑器
@@ -387,6 +395,23 @@ themeActivePreview: 当前为激活主题, 修改会实时预览。
 themeClickToPreview: 点击下方“激活”按钮预览此主题。
 themeActivate: 激活主题
 themeEdit: 编辑主题
+cssThemeList: CSS 主题列表
+cssThemeDelete: 删除
+cssThemeBuiltInReadOnly: 内置CSS主题只读，无法删除。
+cssThemeInfo: 主题信息
+cssThemeName: 名称
+cssThemeUrl: CSS 地址
+cssThemeType: 类型
+cssThemeBuiltIn: 内置
+cssThemeCustom: 自定义
+cssThemeAddCustom: 添加自定义主题
+cssThemeLoad: 加载
+cssThemeHelp: CSS 主题说明
+cssThemeHelpDesc1: CSS 主题通过加载外部 CSS 文件来覆盖应用样式。
+cssThemeHelpDesc2: 在 CSS 文件中使用 CSS 变量来自定义外观：
+cssThemeActive: 当前为激活主题
+cssThemeClickToActivate: 点击下方"激活"按钮应用此主题
+cssThemeActivate: 应用主题
 settingUiFontFamily: UI 字体
 settingUiFontFamilyDesc: 界面文字使用的字体族
 settingUiFontSize: UI 字号
@@ -403,6 +428,8 @@ settingAcrylicBackground: 亚克力背景
 settingAcrylicBackgroundDesc: 使用系统毛玻璃效果作为窗口背景，面板将变为半透明
 settingAcrylicOpacity: 毛玻璃透明度
 settingAcrylicOpacityDesc: 调整亚克力背景下面板的透明度，0.6 为默认观感，越小越透明
+settingReducedMotion: 减少动画效果
+settingReducedMotionDesc: 禁用界面中的动画和过渡效果，提升性能
 
 # 设置项 - Editor
 settingWaveformFps: 波形刷新率
@@ -574,11 +601,14 @@ filterHigh: 上限
 filterSampleRate: 采样率
 fft: 频域求解
 fftSettings: 频域设置
+ifft: 逆频域求解
+ifftSource: 频域源
+ifftNoSource: 未连接
 spectrum: 频谱
 spectrumSettings: 频谱设置
 spectrumSource: 数据源
-spectrumNoSource: 未选择数据源
-spectrumNoSourceHint: 请在右侧选择一个 FFT 求解器
+spectrumNoSource: 未连接数据源
+spectrumNoSourceHint: 请在节点图中将 FFT 求解器的 spectrum 输出连到本控件的 spectrum 端口
 spectrumWindowSize: 窗口大小
 spectrumWindowType: 窗函数
 spectrumOutputMode: 输出模式
@@ -593,6 +623,8 @@ windowHamming: 汉明
 windowBlackman: 布莱克曼
 domainTime: 时域
 domainFreq: 频域
+domainMismatchTitle: 域不匹配
+domainMismatchMsg: 时域与频域端口不能直连 (时域→频域 / 频域→时域均被阻止)
 
 # 3D 模型控件
 model3d: 3D 模型

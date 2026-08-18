@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::ipc::Channel;
 use tokio::sync::oneshot;
-use vofa_next_buffer::{DataBuffer, RawDataBatch, RawDataCollector, WaveformWindow};
+use vofa_next_buffer::{DataBuffer, RawDataBatch, RawDataCollector, RawDrain, WaveformWindow};
 use vofa_next_core::{
     CanBuffer, CanFrameBatch, DecodedBuffer, DecodedEventBatch, Error, LogicBuffer,
     LogicSampleBatch, Result,
@@ -175,14 +175,22 @@ pub fn leave_group(groups: &Arc<Mutex<HashMap<String, StreamGroupState>>>, key: 
 
 // ============ 各数据流的 Source 实现 ============
 
-/// 原始字节流 (全局 RAWDATA / RawData 节点旁路共用) — 增量 drain
+/// 原始字节流 (全局 RAWDATA / RawData 节点旁路共用) — 游标增量读取
+///
+/// 读取不消费 collector 数据, 历史在容量内对所有订阅者可见。
+/// 游标落后于 collector.base_index 时自动对齐 (数据已被丢弃)。
 pub struct RawDataSource {
     collector: Arc<Mutex<RawDataCollector>>,
+    read_index: usize,
 }
 
 impl RawDataSource {
     pub fn new(collector: Arc<Mutex<RawDataCollector>>) -> Self {
-        Self { collector }
+        let read_index = collector.lock().base_index();
+        Self {
+            collector,
+            read_index,
+        }
     }
 }
 
@@ -190,17 +198,25 @@ impl StreamSource for RawDataSource {
     type Batch = RawDataBatch;
 
     fn backlog(&mut self) -> usize {
-        self.collector.lock().stored_bytes()
+        self.collector.lock().remaining_bytes_from(self.read_index)
     }
 
     fn drain(&mut self, max: usize) -> Option<Self::Batch> {
-        // 锁内仅移动 Vec (drain_raw), base64 编码在锁外 (into_batch) —
-        // 编码耗时与数据量成正比, 在锁内会阻塞 data_loop 的 push_chunk
-        let raw = { self.collector.lock().drain_raw(max) };
-        if raw.chunks.is_empty() {
+        let (chunks, next_index) = {
+            self.collector.lock().read_from(self.read_index, max)
+        };
+        self.read_index = next_index;
+        if chunks.is_empty() {
             None
         } else {
-            Some(raw.into_batch())
+            Some(
+                RawDrain {
+                    chunks,
+                    total_bytes: 0,
+                    dropped_bytes: 0,
+                }
+                .into_batch(),
+            )
         }
     }
 

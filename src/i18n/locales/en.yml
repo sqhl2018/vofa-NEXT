@@ -166,6 +166,10 @@ sendPanelMode: Send Panel
 sendPanelBottom: Bottom
 sendPanelSeparate: Side
 rawDataEmpty: No raw data yet
+rawDataDirectionAll: All
+rawDataDirectionRx: RX
+rawDataDirectionTx: TX
+rawDataSearchPlaceholder: Search...
 displayOptions: Display
 
 # Node Editor
@@ -338,6 +342,8 @@ templateMath: Math
 templateMathDesc: Demonstrates sin / sum arithmetic nodes, runs with TestData (no hardware needed)
 templateFilter: Filter
 templateFilterDesc: Lowpass filtering demo, compare raw vs filtered waveform
+templateFft: Spectrum
+templateFftDesc: FFT solver → spectrum view → IFFT back to time domain; shows time/freq port wiring (TestData, no hardware needed)
 templateCan: CAN
 templateCanDesc: Slcan transport + CAN frame view, connect a CAN analyzer to send/receive
 templateSerial: Serial
@@ -370,6 +376,8 @@ settingDebugDesc: Show debug features such as Inspect Element in context menus
 settingTheme: Theme
 settingThemeDesc: Application color scheme
 settingThemeEdit: Edit Theme
+colorTheme: Color Theme
+cssTheme: CSS Style Theme
 
 # Theme editor
 themeEditor: Theme Editor
@@ -387,6 +395,23 @@ themeActivePreview: This is the active theme. Edits preview live.
 themeClickToPreview: Click Activate below to preview this theme.
 themeActivate: Activate Theme
 themeEdit: Edit Theme
+cssThemeList: CSS Themes
+cssThemeDelete: Delete
+cssThemeBuiltInReadOnly: Built-in CSS themes are read-only and cannot be deleted.
+cssThemeInfo: Theme Info
+cssThemeName: Name
+cssThemeUrl: CSS URL
+cssThemeType: Type
+cssThemeBuiltIn: Built-in
+cssThemeCustom: Custom
+cssThemeAddCustom: Add Custom Theme
+cssThemeLoad: Load
+cssThemeHelp: CSS Theme Guide
+cssThemeHelpDesc1: CSS themes override application styles by loading external CSS files.
+cssThemeHelpDesc2: "Use CSS variables in your CSS file to customize the appearance:"
+cssThemeActive: This is the active theme
+cssThemeClickToActivate: Click Activate below to apply this theme
+cssThemeActivate: Apply Theme
 settingUiFontFamily: UI Font Family
 settingUiFontFamilyDesc: Font family used for interface text
 settingUiFontSize: UI Font Size
@@ -403,6 +428,8 @@ settingAcrylicBackground: Acrylic Background
 settingAcrylicBackgroundDesc: Use the system frosted-glass effect as the window background; panels become translucent
 settingAcrylicOpacity: Acrylic Opacity
 settingAcrylicOpacityDesc: Adjust panel translucency over the acrylic background; 0.6 is the default look, lower means more transparent
+settingReducedMotion: Reduce Motion
+settingReducedMotionDesc: Disable animations and transitions in the interface to improve performance
 
 # Setting items - Editor
 settingWaveformFps: Waveform FPS
@@ -574,11 +601,14 @@ filterHigh: High
 filterSampleRate: Sample Rate
 fft: FFT
 fftSettings: FFT Settings
+ifft: IFFT
+ifftSource: Source
+ifftNoSource: Not connected
 spectrum: Spectrum
 spectrumSettings: Spectrum Settings
 spectrumSource: Source
-spectrumNoSource: No source
-spectrumNoSourceHint: Select an FFT solver on the right
+spectrumNoSource: No source connected
+spectrumNoSourceHint: Connect an FFT solver's spectrum output to this widget's spectrum port in the node graph
 spectrumWindowSize: Window Size
 spectrumWindowType: Window Function
 spectrumOutputMode: Output Mode
@@ -593,6 +623,8 @@ windowHamming: Hamming
 windowBlackman: Blackman
 domainTime: Time
 domainFreq: Freq
+domainMismatchTitle: Domain mismatch
+domainMismatchMsg: Time-domain and frequency-domain ports cannot be connected directly
 
 # 3D Model widget
 model3d: 3D Model
