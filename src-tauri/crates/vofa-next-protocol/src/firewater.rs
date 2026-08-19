@@ -44,7 +44,10 @@ impl ProtocolEngine for FireWaterEngine {
         let ts = vofa_next_core::now_us();
 
         // 单次遍历按行切分 (原实现每行 drain 一次, O(n²))
-        while let Some(rel) = self.buf.as_bytes()[start..].iter().position(|&b| b == b'\n') {
+        while let Some(rel) = self.buf.as_bytes()[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+        {
             let pos = start + rel;
             let line = self.buf[start..pos].trim_matches('\r');
             start = pos + 1;
@@ -87,6 +90,14 @@ impl ProtocolEngine for FireWaterEngine {
     fn encode_channels(&mut self, values: &[f32]) -> Vec<u8> {
         let s: Vec<String> = values.iter().map(|v| format!("{:.6}", v)).collect();
         format!("{}\n", s.join(",")).into_bytes()
+    }
+
+    fn encode_frame(&mut self, frame: &DataFrame) -> Vec<u8> {
+        // 自动通道模式且尚未 detected (纯编码侧, 未 feed 过): 以输入帧通道数为准
+        if self.channels.is_none() && self.detected.is_none() {
+            self.detected = Some(frame.channels.len());
+        }
+        self.encode_channels(&frame.channels)
     }
 
     fn name(&self) -> &str {
