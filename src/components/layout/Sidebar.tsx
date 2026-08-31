@@ -5,8 +5,9 @@ import { useContextMenu } from '../../lib/hooks/useContextMenu';
 import { transitionStore } from '../../lib/utils/transitionStore';
 import { dockDrag } from '../../lib/dockDrag';
 import { t } from '../../i18n';
-import { WidgetPalette } from '../panels/WidgetPalette';
+import { WidgetPalette } from '../panels/widgetPalette';
 import { QuickStartPanel } from '../panels/QuickStartPanel';
+import { DataPanelsPanel } from '../panels/DataPanelsPanel';
 import { PanelLeft, RefreshCw } from 'lucide-react';
 import { AnimatedSwitch } from '../ui/AnimatedSwitch';
 import { useLayoutStore } from '../../store/layoutStore';
@@ -42,6 +43,7 @@ export const Sidebar = memo(function Sidebar({ view }: SidebarProps) {
   const titleMap: Record<SidebarView, Parameters<typeof t>[1]> = {
     quickstart: 'quickStart',
     widgets: 'widgetPalette',
+    panels: 'menuPanel',
   };
 
   // 标题栏为拖拽源 — 拖到窗口左/右边缘可切换停靠侧 (dockDrag 控制器)
@@ -65,10 +67,13 @@ export const Sidebar = memo(function Sidebar({ view }: SidebarProps) {
       >
         <span>{t(lang, titleMap[view])}</span>
       </div>
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        <AnimatedSwitch switchKey={view} order={['quickstart', 'widgets']} axis="y">
+      {/* 内容区 — 不自己滚动, 约束高度让各面板 (QuickStart/WidgetPalette/DataPanels) 内部滚动,
+          保证面板顶部工具条 (如控件面板跳转条) 始终固定在可视区上部 */}
+      <div className="flex-1 min-h-0 overflow-hidden px-3 py-3">
+        <AnimatedSwitch switchKey={view} order={['quickstart', 'widgets', 'panels']} axis="y" className="h-full">
           {view === 'quickstart' && <QuickStartPanel />}
           {view === 'widgets' && <WidgetPalette />}
+          {view === 'panels' && <DataPanelsPanel />}
         </AnimatedSwitch>
       </div>
     </div>

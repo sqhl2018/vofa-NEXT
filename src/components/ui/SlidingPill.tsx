@@ -47,9 +47,22 @@ export function useSlidingPill(activeKey: string | null) {
       );
     };
     update();
-    const ro = new ResizeObserver(update);
+    // rAF 延迟: RO 回调内同步 setState 会改变布局并在同一帧再次触发 RO,
+    // 导致 "ResizeObserver loop completed with undelivered notifications"
+    let raf: number | null = null;
+    const ro = new ResizeObserver(() => {
+      if (raf !== null) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        update();
+      });
+    });
     ro.observe(container);
-    return () => ro.disconnect();
+    container.querySelectorAll<HTMLElement>('[data-tab-key]').forEach((el) => ro.observe(el));
+    return () => {
+      ro.disconnect();
+      if (raf !== null) cancelAnimationFrame(raf);
+    };
   });
 
   return { containerRef, pill };

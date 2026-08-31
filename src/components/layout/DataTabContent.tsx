@@ -11,6 +11,10 @@ import {
   Cpu as CpuIcon,
   CircuitBoard as CircuitBoardIcon,
   ScanText as ScanTextIcon,
+  Zap as ZapIcon,
+  AlertTriangle as AlertTriangleIcon,
+  ListTree as ListTreeIcon,
+  History as HistoryIcon,
 } from 'lucide-react';
 import { WaveformChart } from '../displays/waveform/WaveformChart';
 import { RawDataView } from '../displays/rawdata/RawDataView';
@@ -20,7 +24,11 @@ import { SpectrumChart } from '../displays/widgets/SpectrumChart';
 import { CommandSender } from '../displays/command/CommandSender';
 import { CanView } from '../displays/can/CanView';
 import { LogicView } from '../displays/logic/LogicView';
+import { CompileErrorsView } from '../displays/compileErrors/CompileErrorsView';
+import { CompileResultsView } from '../displays/compileResults/CompileResultsView';
+import { OperationHistoryView } from '../displays/history/OperationHistoryView';
 import { FrameDecoder } from '../displays/decoder/FrameDecoder';
+import { Trigger } from '../controls/Trigger';
 import { TableView } from '../displays/widgets/TableView';
 import { AxisSettings } from '../displays/waveform/AxisSettings';
 import { SuspenseFallback } from '../ui/SuspenseFallback';
@@ -71,7 +79,7 @@ const WaveformTabView = memo(function WaveformTabView({
       <div className="flex-1 min-w-0 relative">
         <WaveformChart widget={widget} axisConfig={axisConfig} onConfigChange={onConfigChange} buffer={buffer} />
       </div>
-      <div className="w-[256px] flex-shrink-0 border-l border-border bg-bg-sidebar overflow-y-auto overflow-x-hidden">
+      <div className="w-[256px] shrink-0 border-l border-border bg-bg-sidebar overflow-y-auto overflow-x-hidden">
         <AxisSettings
           config={axisConfig}
           onChange={onConfigChange}
@@ -186,6 +194,19 @@ const FrameDecoderTabView = memo(function FrameDecoderTabView({ widget, onRemove
   );
 });
 
+interface TriggerTabViewProps {
+  widget: Extract<WidgetConfig, { kind: 'Trigger' }>;
+  onRemove: () => void;
+}
+
+const TriggerTabView = memo(function TriggerTabView({ widget, onRemove }: TriggerTabViewProps) {
+  return (
+    <div className="flex h-full w-full">
+      <Trigger widget={widget} onRemove={onRemove} />
+    </div>
+  );
+});
+
 /// 无 props 分支 — 模块级元素常量, 每次渲染返回同一引用, React 在 beginWork 中
 /// 因 props 引用相等直接 bailout, 完全跳过子树重渲染
 const canTabContent = (
@@ -196,6 +217,21 @@ const canTabContent = (
 const logicTabContent = (
   <div className="flex h-full w-full">
     <LogicView />
+  </div>
+);
+const compileErrorsTabContent = (
+  <div className="flex h-full w-full">
+    <CompileErrorsView />
+  </div>
+);
+const compileResultsTabContent = (
+  <div className="flex h-full w-full">
+    <CompileResultsView />
+  </div>
+);
+const operationHistoryTabContent = (
+  <div className="flex h-full w-full">
+    <OperationHistoryView />
   </div>
 );
 
@@ -401,6 +437,12 @@ export const DataTabContent = memo(function DataTabContent({ tabId }: { tabId: s
       return canTabContent;
     case 'logic':
       return logicTabContent;
+    case 'compile-errors':
+      return compileErrorsTabContent;
+    case 'compile-results':
+      return compileResultsTabContent;
+    case 'operation-history':
+      return operationHistoryTabContent;
     case 'table-view': {
       const widget = widgets.find(
         (w) => w.params.id === tab.widgetId && w.kind === 'TableView'
@@ -417,6 +459,13 @@ export const DataTabContent = memo(function DataTabContent({ tabId }: { tabId: s
       ) as Extract<WidgetConfig, { kind: 'FrameDecoder' }> | undefined;
       if (!widget) return noWidget;
       return <FrameDecoderTabView widget={widget} onRemove={noopRemove} />;
+    }
+    case 'trigger': {
+      const widget = widgets.find(
+        (w) => w.params.id === tab.widgetId && w.kind === 'Trigger'
+      ) as Extract<WidgetConfig, { kind: 'Trigger' }> | undefined;
+      if (!widget) return noWidget;
+      return <TriggerTabView widget={widget} onRemove={noopRemove} />;
     }
     default:
       return null;
@@ -447,8 +496,16 @@ export function DataTabIcon({ type, size = 12 }: { type: string; size?: number }
       return <CircuitBoardIcon size={size} />;
     case 'frame-decoder':
       return <ScanTextIcon size={size} />;
+    case 'trigger':
+      return <ZapIcon size={size} />;
     case 'table-view':
       return <BarChart3Icon size={size} />;
+    case 'compile-errors':
+      return <AlertTriangleIcon size={size} />;
+    case 'compile-results':
+      return <ListTreeIcon size={size} />;
+    case 'operation-history':
+      return <HistoryIcon size={size} />;
     default:
       return null;
   }

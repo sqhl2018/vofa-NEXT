@@ -10,7 +10,64 @@ name = "vofa_next_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace]
-members = ["crates/vofa-next-core", "crates/vofa-next-transport", "crates/vofa-next-protocol", "crates/vofa-next-buffer", "crates/vofa-next-nodes", "crates/vofa-next-dsp", "crates/vofa-next-automotive"]
+members = [
+  "crates/ai_chat",
+  "crates/ai_provider",
+  "crates/ai_session",
+  "crates/app_state",
+  "crates/automotive_can",
+  "crates/automotive_diag",
+  "crates/automotive_isotp",
+  "crates/buffer_databuffer",
+  "crates/buffer_graph",
+  "crates/buffer_raw",
+  "crates/buffer_ring",
+  "crates/can_types",
+  "crates/cmd_buffer",
+  "crates/cmd_can_load",
+  "crates/cmd_can_transport",
+  "crates/cmd_debug",
+  "crates/cmd_display",
+  "crates/cmd_graph",
+  "crates/cmd_pipeline",
+  "crates/cmd_rawdata",
+  "crates/core",
+  "crates/diagnostic",
+  "crates/dsp_filter",
+  "crates/dsp_fft",
+  "crates/dsp_window",
+  "crates/error",
+  "crates/logic_decoder",
+  "crates/logic_types",
+  "crates/mcp_client",
+  "crates/mcp_server",
+  "crates/menu_shell",
+  "crates/notify_events",
+  "crates/node_engine",
+  "crates/node_eval",
+  "crates/node_frame_decoder",
+  "crates/node_hir",
+  "crates/node_kind",
+  "crates/node_lower",
+  "crates/node_plane",
+  "crates/node_testkit",
+  "crates/node_trigger",
+  "crates/pipeline_data_plane",
+  "crates/pipeline_bus",
+  "crates/pipeline_dispatcher",
+  "crates/pipeline_stream",
+  "crates/protocol_can_bridge",
+  "crates/protocol_engine",
+  "crates/protocol_float",
+  "crates/schema_engine",
+  "crates/schema_types",
+  "crates/subscription",
+  "crates/transport_can_bridge",
+  "crates/transport_core",
+  "crates/transport_net",
+  "crates/transport_serial",
+  "crates/update_flow",
+]
 
 [workspace.package]
 edition = "2021"
@@ -51,6 +108,7 @@ single_match_else = "allow"
 # 允许 if-then-else 链 (比 match 更清晰时)
 match_same_arms = "allow"
 # 允许手动 clamp
+
 manual_clamp = "allow"
 # 允许结构体字段顺序不优化
 struct_field_names = "allow"
@@ -66,37 +124,129 @@ useless_format = "allow"
 new_without_default = "allow"
 # 允许较多方法 (impl 块)
 too_many_lines = "allow"
+# MutexGuard 临界区按锁序整段持有是数据平面的刻意并发语义, 按逐次使用拆小作用域
+# 反而扩大竞态窗口 (clippy nursery 启发式)
+significant_drop_tightening = "allow"
+
 
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+# genai: 多 LLM provider 聚合客户端 (OpenAI/Anthropic/Gemini/DeepSeek/通义/Kimi/GLM/
+# Ollama 等 26+ 原生协议), 内部复用 reqwest+rustls, 流式与工具调用完备 —
+# 避免 AI 对话层手写各家 provider 协议 (AI 功能统一规划在后端的基础设施)
+genai = "0.6"
+# rmcp: Model Context Protocol 官方 Rust SDK — MCP client (stdio/streamable-http)
+# 与 server (streamable-http) 双向能力, MCP 协议不在本仓库自研
+rmcp = { version = "3.1", default-features = false, features = [
+  "macros",
+  "server",
+  "transport-streamable-http-server",
+  "client",
+  "transport-child-process",
+  "transport-streamable-http-client-reqwest",
+  "reqwest",
+] }
+# axum: 本地 MCP server 的 HTTP 宿主 (rmcp streamable-http server 传输为 tower service,
+# 需要 HTTP 框架挂载), 仅监听 127.0.0.1
+# keyring: 系统凭据库 (macOS Keychain / Windows Credential Manager / libsecret) —
+# AI provider 的 API key 存钥匙串而非明文 settings.json; 自研加密落盘仍可被提取,
+# 系统凭据库才是正确方案
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+security-framework = "3"
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+futures = "0.3"
+async-trait = "0.1"
 base64 = "0.22"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "fs"] }
 log = "0.4"
 thiserror = "1"
-anyhow = "1"
+regex = "1"
+glob = "0.3"
 rustc-hash = "2"
-vofa-next-core = { path = "crates/vofa-next-core" }
-vofa-next-transport = { path = "crates/vofa-next-transport" }
-vofa-next-protocol = { path = "crates/vofa-next-protocol" }
-vofa-next-buffer = { path = "crates/vofa-next-buffer" }
-vofa-next-nodes = { path = "crates/vofa-next-nodes" }
-vofa-next-dsp = { path = "crates/vofa-next-dsp" }
-vofa-next-automotive = { path = "crates/vofa-next-automotive" }
+petgraph = { version = "0.8", default-features = false, features = ["stable_graph"] }
+buffer_ring = { path = "crates/buffer_ring" }
+buffer_databuffer = { path = "crates/buffer_databuffer" }
+buffer_graph = { path = "crates/buffer_graph" }
+buffer_raw = { path = "crates/buffer_raw" }
+ai_provider = { path = "crates/ai_provider" }
+ai_chat = { path = "crates/ai_chat" }
+ai_session = { path = "crates/ai_session" }
+mcp_client = { path = "crates/mcp_client" }
+mcp_server = { path = "crates/mcp_server" }
+cmd_ai = { path = "crates/cmd_ai" }
+cmd_buffer = { path = "crates/cmd_buffer" }
+cmd_can_load = { path = "crates/cmd_can_load" }
+cmd_can_transport = { path = "crates/cmd_can_transport" }
+cmd_debug = { path = "crates/cmd_debug" }
+cmd_display = { path = "crates/cmd_display" }
+cmd_graph = { path = "crates/cmd_graph" }
+cmd_pipeline = { path = "crates/cmd_pipeline" }
+cmd_rawdata = { path = "crates/cmd_rawdata" }
+vofa_core = { path = "crates/core" }
+error = { path = "crates/error" }
+can_types = { path = "crates/can_types" }
+logic_types = { path = "crates/logic_types" }
+diagnostic = { path = "crates/diagnostic" }
+schema_types = { path = "crates/schema_types" }
+protocol_engine = { path = "crates/protocol_engine" }
+protocol_float = { path = "crates/protocol_float" }
+protocol_can_bridge = { path = "crates/protocol_can_bridge" }
+logic_decoder = { path = "crates/logic_decoder" }
+node_engine = { path = "crates/node_engine" }
+node_eval = { path = "crates/node_eval" }
+node_frame_decoder = { path = "crates/node_frame_decoder" }
+node_hir = { path = "crates/node_hir" }
+node_kind = { path = "crates/node_kind" }
+node_lower = { path = "crates/node_lower" }
+node_plane = { path = "crates/node_plane" }
+node_testkit = { path = "crates/node_testkit" }
+node_trigger = { path = "crates/node_trigger" }
+schema_engine = { path = "crates/schema_engine" }
+transport_can_bridge = { path = "crates/transport_can_bridge" }
+transport_core = { path = "crates/transport_core" }
+transport_net = { path = "crates/transport_net" }
+transport_serial = { path = "crates/transport_serial" }
+dsp_window = { path = "crates/dsp_window" }
+dsp_filter = { path = "crates/dsp_filter" }
+dsp_fft = { path = "crates/dsp_fft" }
+automotive_isotp = { path = "crates/automotive_isotp" }
+automotive_diag = { path = "crates/automotive_diag" }
+automotive_can = { path = "crates/automotive_can" }
+pipeline_data_plane = { path = "crates/pipeline_data_plane" }
+pipeline_bus = { path = "crates/pipeline_bus" }
+pipeline_dispatcher = { path = "crates/pipeline_dispatcher" }
+pipeline_stream = { path = "crates/pipeline_stream" }
+notify_events = { path = "crates/notify_events" }
+app_state = { path = "crates/app_state" }
+menu_shell = { path = "crates/menu_shell" }
+update_flow = { path = "crates/update_flow" }
+subscription = { path = "crates/subscription" }
 libautomotive = "0.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-vofa-next-core = { workspace = true }
-vofa-next-transport = { workspace = true }
-vofa-next-protocol = { workspace = true }
-vofa-next-buffer = { workspace = true }
-vofa-next-nodes = { workspace = true }
-vofa-next-dsp = { workspace = true }
-vofa-next-automotive = { workspace = true }
+pipeline_data_plane = { workspace = true }
+pipeline_dispatcher = { workspace = true }
+pipeline_stream = { workspace = true }
+notify_events = { workspace = true }
+app_state = { workspace = true }
+subscription = { workspace = true }
+menu_shell = { workspace = true }
+update_flow = { workspace = true }
+cmd_buffer = { workspace = true }
+cmd_ai = { workspace = true }
+cmd_can_load = { workspace = true }
+cmd_can_transport = { workspace = true }
+cmd_debug = { workspace = true }
+cmd_display = { workspace = true }
+cmd_graph = { workspace = true }
+cmd_pipeline = { workspace = true }
+cmd_rawdata = { workspace = true }
 tauri = { version = "2", features = ["devtools", "macos-private-api"] }
 tauri-plugin-opener = "2"
 serde = { workspace = true }
@@ -111,4 +261,6 @@ tauri-plugin-notification = "2"
 tauri-plugin-store = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+semver = "1"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 window-vibrancy = "0.6"

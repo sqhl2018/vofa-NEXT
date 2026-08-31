@@ -79,7 +79,7 @@ export interface FilterConfig {
 
 /// 信号域类型 — 用于节点图端口的时域/频域/字节域静态标注
 /// bytes: 字节平面端口 (Transport rx/tx, Protocol in/out, FrameDecoder in, Command loopbackOut)
-export type DomainType = 'time' | 'freq' | 'bytes';
+export type DomainType = 'time' | 'freq' | 'bytes' | 'string';
 
 /// FFT 求解配置 (频域求解器 — 输入时域信号 in0, 输出频谱)
 export interface FFTConfig {
@@ -149,7 +149,17 @@ export interface MathConfig {
 }
 
 /// 单目运算集合 — 这些 op 只使用第一个输入
-export const UNARY_MATH_OPS: MathOp[] = ['abs', 'neg', 'square', 'sqrt', 'sin', 'cos', 'tan', 'log'];
+///
+/// 内部派生 (Math NodeDef `input_count` 在 widgetToNodeKind 中按 `isUnary` 强制 1);
+/// 此前以 `UNARY_MATH_OPS` 公开重导出被 NodeEditor / WidgetPalette / MathWidget 共用,
+/// 现在以 `isUnaryMathOp` 函数 + `lib/utils/nodeDef.ts` 内部使用替代,
+/// 上层应改读 `widget.params.inputCount` (用户配置 → 后端 input_count 直接透传)。
+const _UNARY_MATH_OPS: readonly MathOp[] = ['abs', 'neg', 'square', 'sqrt', 'sin', 'cos', 'tan', 'log'];
+
+/// 单目运算判定 — 与 `_UNARY_MATH_OPS` 集合一致; 替代原 `UNARY_MATH_OPS.includes(op)`
+export function isUnaryMathOp(op: MathOp): boolean {
+  return _UNARY_MATH_OPS.includes(op);
+}
 
 /// 计算数学运算结果 (输入为 number[], 输出为单 number)
 export function computeMathResult(op: MathOp, inputs: number[]): number {
@@ -175,139 +185,176 @@ export function computeMathResult(op: MathOp, inputs: number[]): number {
   }
 }
 
+// ============ 字符串操作控件 ============
+//
+// 与 Rust vofa_next_node_kind::StrOp 对应 (serde lowercase, 同 MathOp)。
+// 语义规范 (以后端 str_op.rs 为准):
+// - 索引 1-based (pos 从 1 开始; find 命中返回 1-based 位置, 未找到返回 0)
+// - len/size = 0 表示 "到末尾/全部"
+// - 字符串索引按字符计 (多字节字符安全)
+
+/// 字符串操作种类
+export type StrOp =
+  | 'len'      // 长度: 字符数 (输出数值)
+  | 'find'     // 查找: 子串 1-based 字符位置, 未命中 0 (输出数值)
+  | 'contains' // 包含: 命中 1 / 未命中 0 (输出数值)
+  | 'left'     // 左截取 size 个字符 (size=0 → 整串)
+  | 'right'    // 右截取 size 个字符 (size=0 → 整串)
+  | 'mid'      // 从 pos (1-based) 截取 len 个字符 (len=0 → 到末尾)
+  | 'concat'   // 拼接: str1 + str2
+  | 'insert'   // 在 pos (1-based) 处插入 str2
+  | 'delete'   // 从 pos 删除 len 个字符 (len=0 → 删到末尾)
+  | 'replace'  // 从 pos 起将 len 个字符替换为 str2
+  | 'upper'    // 转大写
+  | 'lower'    // 转小写
+  | 'trim'     // 去除首尾空白
+  | 'reverse'  // 按字符反转
+  // 转换算子 (数值 ↔ 文本):
+  | 'format'       // 模板格式化: {N} 引用第 N 路 / {N:.P} 定精度 (fmt 未连接用 tmpl 参数)
+  | 'parse'        // 从 pos 起 (1-based 字符) 扫描首个数字 token (十进制/0x 十六进制), 未命中 0
+  | 'encode_hex';  // UTF-8 字节大写 HEX 文本
+
+/// 字符串操作端口描述
+export interface StrOpPort {
+  id: string;
+  label: string;
+  domain: DomainType;
+}
+
+/// 单个字符串操作的端口表 — 与 Rust StrOp::input_ports / output_domain 完全一致 (唯一事实源)
+export interface StrOpMeta {
+  /// 输入端口 (固定顺序, 后端 evaluate 依此取参)
+  inputs: StrOpPort[];
+  /// 输出端口 (固定 id "result") 的域: len/find/contains 为数值 (time), 其余为字符串
+  outputDomain: DomainType;
+  /// 带内联数值输入框的数值端口 id — StrWidget 据此渲染内联框;
+  /// 端口未连接时回退到 StrConfig 的 pos/len/size 同名字段
+  inlineNumPorts: string[];
+}
+
+// 端口组常量 (复用以避免重复书写)
+const STR_IN_STR: StrOpPort[] = [{ id: 'str', label: 'str', domain: 'string' }];
+const STR_IN_STR_SUBSTR: StrOpPort[] = [
+  { id: 'str', label: 'str', domain: 'string' },
+  { id: 'substr', label: 'substr', domain: 'string' },
+];
+const STR_IN_STR_SIZE: StrOpPort[] = [
+  { id: 'str', label: 'str', domain: 'string' },
+  { id: 'size', label: 'size', domain: 'time' },
+];
+const STR_IN_STR_POS_LEN: StrOpPort[] = [
+  { id: 'str', label: 'str', domain: 'string' },
+  { id: 'pos', label: 'pos', domain: 'time' },
+  { id: 'len', label: 'len', domain: 'time' },
+];
+const STR_IN_STR1_STR2: StrOpPort[] = [
+  { id: 'str1', label: 'str1', domain: 'string' },
+  { id: 'str2', label: 'str2', domain: 'string' },
+];
+const STR_IN_STR1_STR2_POS: StrOpPort[] = [
+  { id: 'str1', label: 'str1', domain: 'string' },
+  { id: 'str2', label: 'str2', domain: 'string' },
+  { id: 'pos', label: 'pos', domain: 'time' },
+];
+const STR_IN_STR1_STR2_POS_LEN: StrOpPort[] = [
+  { id: 'str1', label: 'str1', domain: 'string' },
+  { id: 'str2', label: 'str2', domain: 'string' },
+  { id: 'pos', label: 'pos', domain: 'time' },
+  { id: 'len', label: 'len', domain: 'time' },
+];
+// FORMAT: 模板端口 (未连接回退 StrConfig.tmpl 参数) + in0..in3 数值引用 (未连接取 0)
+const STR_IN_FMT_NUM4: StrOpPort[] = [
+  { id: 'fmt', label: 'fmt', domain: 'string' },
+  { id: 'in0', label: 'in0', domain: 'time' },
+  { id: 'in1', label: 'in1', domain: 'time' },
+  { id: 'in2', label: 'in2', domain: 'time' },
+  { id: 'in3', label: 'in3', domain: 'time' },
+];
+// PARSE: 源文本 + 1-based 扫描起点 (pos 内联回退默认 1)
+const STR_IN_STR_POS: StrOpPort[] = [
+  { id: 'str', label: 'str', domain: 'string' },
+  { id: 'pos', label: 'pos', domain: 'time' },
+];
+
+/// 全部字符串操作的端口元数据表
+///
+/// 后端 `node_kind::StrOp::input_ports()` 与 `output_domain()` 是权威定义。
+/// 此处 TS 镜像仅供前端 UI 渲染节点把手 / 内联数值框使用; 输出域部分 (`outputDomain`)
+/// 在 StrWidget 中后续可改读 `derivedPorts` (后端 graph:derived 事件); 输入把手
+/// (`inputs`) 因 backend derived_ports 仅枚举输出端口, 暂时仍需本常量作为 UI 占位输入。
+export const STR_OP_PORTS: Record<StrOp, StrOpMeta> = {
+  len: { inputs: STR_IN_STR, outputDomain: 'time', inlineNumPorts: [] },
+  find: { inputs: STR_IN_STR_SUBSTR, outputDomain: 'time', inlineNumPorts: [] },
+  contains: { inputs: STR_IN_STR_SUBSTR, outputDomain: 'time', inlineNumPorts: [] },
+  left: { inputs: STR_IN_STR_SIZE, outputDomain: 'string', inlineNumPorts: ['size'] },
+  right: { inputs: STR_IN_STR_SIZE, outputDomain: 'string', inlineNumPorts: ['size'] },
+  mid: { inputs: STR_IN_STR_POS_LEN, outputDomain: 'string', inlineNumPorts: ['pos', 'len'] },
+  concat: { inputs: STR_IN_STR1_STR2, outputDomain: 'string', inlineNumPorts: [] },
+  insert: { inputs: STR_IN_STR1_STR2_POS, outputDomain: 'string', inlineNumPorts: ['pos'] },
+  delete: { inputs: STR_IN_STR_POS_LEN, outputDomain: 'string', inlineNumPorts: ['pos', 'len'] },
+  replace: { inputs: STR_IN_STR1_STR2_POS_LEN, outputDomain: 'string', inlineNumPorts: ['pos', 'len'] },
+  upper: { inputs: STR_IN_STR, outputDomain: 'string', inlineNumPorts: [] },
+  lower: { inputs: STR_IN_STR, outputDomain: 'string', inlineNumPorts: [] },
+  trim: { inputs: STR_IN_STR, outputDomain: 'string', inlineNumPorts: [] },
+  reverse: { inputs: STR_IN_STR, outputDomain: 'string', inlineNumPorts: [] },
+  // 转换算子 — format 的模板经 tmpl 参数编辑, in0..in3 无配置字段 (只读展示上游值,
+  // 未连接恒取 0); parse 复用 pos 字段作内联回退
+  format: { inputs: STR_IN_FMT_NUM4, outputDomain: 'string', inlineNumPorts: [] },
+  parse: { inputs: STR_IN_STR_POS, outputDomain: 'time', inlineNumPorts: ['pos'] },
+  encode_hex: { inputs: STR_IN_STR, outputDomain: 'string', inlineNumPorts: [] },
+};
+
 // ============ 3D 模型显示 ============
 
 /// 3D 显示模式
-/// - trajectory: 三通道作为 (x, y, z) 坐标, 渲染拖尾散点轨迹
-/// - attitude:   三通道作为欧拉角 (roll=x, pitch=y, yaw=z, 弧度), 渲染姿态立方体
-export type Model3DMode = 'trajectory' | 'attitude';
+/// - trajectory:           xyz 作为位置, 渲染拖尾轨迹
+/// - attitude:             roll/pitch/yaw 作为欧拉角 (弧度), 渲染旋转模型
+/// - trajectory-attitude:  同时显示拖尾轨迹 + 跟随位置/姿态旋转的模型
+export type Model3DMode = 'trajectory' | 'attitude' | 'trajectory-attitude';
+
+/// 姿态输入格式
+/// - degrees:    roll / pitch / yaw，单位为度
+/// - radians:    roll / pitch / yaw，单位为弧度（旧配置兼容默认值）
+/// - quaternion: q0 / q1 / q2 / q3，其中 q0 = w
+export type Model3DAttitudeInputMode = 'degrees' | 'radians' | 'quaternion';
+
+/// 3D 模型源
+/// - builtin-cube: 默认半透明立方体 (向后兼容旧 widget)
+/// - custom:       用户通过 Tauri 对话框导入的 GLB/GLTF, path 持久化到 widget 配置
+export type Model3DSource =
+  | { kind: 'builtin-cube' }
+  | { kind: 'custom'; path: string; name: string };
 
 /// 3D 模型控件配置
-/// 输入端口固定为 x / y / z, 缺失通道补 0
+/// 输入端口: x / y / z (位置) + roll / pitch / yaw (旋转, 缺失补 0)
+/// 各模式实际使用的端口:
+///   trajectory           -> x / y / z
+///   attitude             -> roll / pitch / yaw
+///   trajectory-attitude  -> x / y / z + roll / pitch / yaw
 export interface Model3DConfig {
   id: string;
   label: string;
   /// 显示模式
   mode: Model3DMode;
-  /// 拖尾长度 (trajectory 模式, 默认 200)
+  /// 姿态输入格式（旧配置缺失时按 radians 解释）
+  attitudeInputMode: Model3DAttitudeInputMode;
+  /// 拖尾长度 (trajectory / trajectory-attitude 模式, 默认 200)
   trailLength: number;
   /// 拖尾/立方体颜色 (HEX, 如 '#75beff')
   color: string;
   /// 坐标轴长度 (默认 1.0)
   axisLength: number;
+  /// 模型来源 (默认 builtin-cube)
+  modelSource: Model3DSource;
 }
 
-// ============ Biquad 滤波器系数计算 (与 Rust RBJ Audio EQ Cookbook 一致) ============
+// ============ Biquad 滤波器系数 (后端单一权威) ============
 //
-// 前端在 syncTabGraph 时将 FilterConfig (preset + cutoff + sampleRate) 转为 IIR biquad 系数,
-// 通过 IPC 同步到后端。后端 DigitalFilter::new(FilterKind::IIR { b, a }) 直接使用这些系数。
-//
-// 公式参考: https://www.musicdsp.org/en/latest/Filters/197-rbj-audio-eq-cookbook.html
-
-const PI_F32 = Math.PI;
-const DEFAULT_Q = 0.70710678; // 1/sqrt(2), Butterworth 响应
-
-function w0(cutoff: number, sampleRate: number): number {
-  if (!Number.isFinite(sampleRate) || sampleRate <= 0) return PI_F32 * 0.5;
-  return 2.0 * PI_F32 * cutoff / sampleRate;
-}
-
-function alpha(w0: number, q: number): number {
-  return Math.sin(w0) / (2.0 * q);
-}
-
-/// 将滤波器频率参数限制在 (0, Nyquist) 开区间内 (与 Rust clamp_to_nyquist 一致)。
-/// RBJ biquad 系数公式仅在 0 < w0 < π (即 freq < sampleRate/2) 时有效。
-function clampToNyquist(freq: number, sampleRate: number): number {
-  if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
-    return Number.isFinite(freq) && freq > 0 ? freq : 1;
-  }
-  const nyquist = sampleRate * 0.5;
-  if (!Number.isFinite(freq)) return nyquist * 0.1;
-  return Math.min(Math.max(freq, nyquist * 0.001), nyquist * 0.999);
-}
-
-/// 低通 biquad 系数 (fc=截止频率, fs=采样率)
-export function lowpassBiquad(cutoff: number, sampleRate: number): { b: [number, number, number]; a: [number, number, number] } {
-  const c = clampToNyquist(cutoff, sampleRate);
-  const w = w0(c, sampleRate);
-  const a = alpha(w, DEFAULT_Q);
-  const cosW = Math.cos(w);
-  const b0 = (1.0 - cosW) / 2.0;
-  const b1 = 1.0 - cosW;
-  const b2 = (1.0 - cosW) / 2.0;
-  const a0 = 1.0 + a;
-  const a1 = -2.0 * cosW;
-  const a2 = 1.0 - a;
-  return { b: [b0, b1, b2], a: [a0, a1, a2] };
-}
-
-/// 高通 biquad 系数
-export function highpassBiquad(cutoff: number, sampleRate: number): { b: [number, number, number]; a: [number, number, number] } {
-  const c = clampToNyquist(cutoff, sampleRate);
-  const w = w0(c, sampleRate);
-  const a = alpha(w, DEFAULT_Q);
-  const cosW = Math.cos(w);
-  const b0 = (1.0 + cosW) / 2.0;
-  const b1 = -(1.0 + cosW);
-  const b2 = (1.0 + cosW) / 2.0;
-  const a0 = 1.0 + a;
-  const a1 = -2.0 * cosW;
-  const a2 = 1.0 - a;
-  return { b: [b0, b1, b2], a: [a0, a1, a2] };
-}
-
-/// 带通 biquad 系数 (常量 0 dB 峰值)
-/// low, high: 通带 [low, high]
-export function bandpassBiquad(low: number, high: number, sampleRate: number): { b: [number, number, number]; a: [number, number, number] } {
-  const lo = clampToNyquist(low, sampleRate);
-  const hi = clampToNyquist(high, sampleRate);
-  const [l, h] = lo > hi ? [hi, lo] : [lo, hi];
-  const fc = Math.sqrt(l * h);
-  const bw = h - l;
-  const w = w0(fc, sampleRate);
-  const q = bw > 0 ? fc / bw : DEFAULT_Q;
-  const a = alpha(w, q);
-  const cosW = Math.cos(w);
-  const b0 = a;
-  const b1 = 0.0;
-  const b2 = -a;
-  const a0 = 1.0 + a;
-  const a1 = -2.0 * cosW;
-  const a2 = 1.0 - a;
-  return { b: [b0, b1, b2], a: [a0, a1, a2] };
-}
-
-/// 带阻 (陷波) biquad 系数
-export function bandstopBiquad(low: number, high: number, sampleRate: number): { b: [number, number, number]; a: [number, number, number] } {
-  const lo = clampToNyquist(low, sampleRate);
-  const hi = clampToNyquist(high, sampleRate);
-  const [l, h] = lo > hi ? [hi, lo] : [lo, hi];
-  const fc = Math.sqrt(l * h);
-  const bw = h - l;
-  const w = w0(fc, sampleRate);
-  const q = bw > 0 ? fc / bw : DEFAULT_Q;
-  const a = alpha(w, q);
-  const cosW = Math.cos(w);
-  const b0 = 1.0;
-  const b1 = -2.0 * cosW;
-  const b2 = 1.0;
-  const a0 = 1.0 + a;
-  const a1 = -2.0 * cosW;
-  const a2 = 1.0 - a;
-  return { b: [b0, b1, b2], a: [a0, a1, a2] };
-}
-
-/// 根据 FilterConfig 计算对应的 IIR biquad 系数
-/// 用于 widgetToNodeKind: 将前端友好的 preset/cutoff 形式转为后端 FilterKind::IIR
-export function biquadFromFilterConfig(cfg: FilterConfig): { b: [number, number, number]; a: [number, number, number] } {
-  switch (cfg.preset) {
-    case 'Lowpass':  return lowpassBiquad(cfg.cutoff, cfg.sampleRate);
-    case 'Highpass': return highpassBiquad(cfg.cutoff, cfg.sampleRate);
-    case 'Bandpass': return bandpassBiquad(cfg.low, cfg.high, cfg.sampleRate);
-    case 'Bandstop': return bandstopBiquad(cfg.low, cfg.high, cfg.sampleRate);
-  }
-}
+// 系数派生由后端 `dsp_filter::filter_kind_from_config` 承担 — 前端 widget.params
+// (preset + cutoff/low/high + sample_rate) 原样下发, 后端编译/求值时
+// 按 RBJ Audio EQ Cookbook 在 `dsp_filter::lowpass_biquad` 等派生 [b, a]。
+// 不再需要前端 b/a 计算; 公式参考:
+// https://www.musicdsp.org/en/latest/Filters/197-rbj-audio-eq-cookbook.html
 
 // ============ 节点编辑器 ============
 
@@ -355,7 +402,7 @@ export interface ControlTab {
 
 // ============ 数据显示区 Tab ============
 
-export type DataTabType = 'waveform' | 'raw' | 'pie' | 'image' | 'waveform-extra' | 'model3d' | 'spectrum' | 'command' | 'can' | 'logic' | 'frame-decoder' | 'table-view';
+export type DataTabType = 'waveform' | 'raw' | 'pie' | 'image' | 'waveform-extra' | 'model3d' | 'spectrum' | 'command' | 'can' | 'logic' | 'frame-decoder' | 'table-view' | 'trigger' | 'compile-errors' | 'compile-results' | 'operation-history';
 
 export interface DataTab {
   id: string;

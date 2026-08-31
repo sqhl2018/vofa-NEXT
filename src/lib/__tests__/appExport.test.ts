@@ -1,5 +1,6 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import {
+  applySnapshot,
   collectPartialSnapshot,
   detectPresentSections,
   parseSnapshot,
@@ -8,6 +9,7 @@ import {
   type AppSnapshot,
 } from '../tauri/appExport';
 import { useAppStore } from '../../store/appStore';
+import { tauriMock } from '../../test/setup';
 
 describe('appExport 拆分备份', () => {
   afterEach(() => {
@@ -85,7 +87,7 @@ describe('appExport 拆分备份', () => {
       rfEdges: [],
       rawDataViewPrefs: {},
     };
-    const parsed = parseSnapshot(serializeSnapshot(v1 as never));
+    const parsed = parseSnapshot(serializeSnapshot(v1));
     expect(parsed.version).toBe(3);
     expect(parsed.dockRoot).toBeUndefined();
     // 单例配置迁移为一对全局节点 + rx→in 字节边
@@ -148,8 +150,43 @@ describe('appExport 拆分备份', () => {
     expect(parsed.rfEdges?.length).toBe(0);
   });
 
-  it('detectPresentSections 正确识别含有的分区', () => {
-    const snap: AppSnapshot = {
+  it('v3 旧版 Command 单帧配置迁移为 frames (widgets 数组 + 节点内嵌 widget 同步)', () => {
+    const legacyParams = {
+      id: 'cmd1',
+      label: 'Cmd',
+      blocks: [{ id: 'b1', type: 'const_hex', hex: 'AA' }],
+      appendNewline: true,
+      loopbackEnabled: false,
+      sendMode: 'manual',
+      timerMs: 100,
+      loopbackHistory: [],
+    };
+    const snap = {
+      version: 3,
+      exportedAt: '2024-01-01T00:00:00Z',
+      widgets: [{ kind: 'Command', params: legacyParams }],
+      rfNodes: [
+        { id: 'cmd1', type: 'widget', position: { x: 0, y: 0 }, data: { tabId: 'default', widget: { kind: 'Command', params: legacyParams } } },
+      ],
+      rfEdges: [],
+    };
+    const parsed = parseSnapshot(JSON.stringify(snap));
+    // widgets 数组内的配置已包装为单帧
+    const w = parsed.widgets?.[0] as { kind: 'Command'; params: { frames?: { blocks: unknown[]; appendNewline: boolean }[]; blocks?: unknown } };
+    expect(w.params.frames).toHaveLength(1);
+    expect(w.params.frames![0].blocks).toEqual(legacyParams.blocks);
+    expect(w.params.frames![0].appendNewline).toBe(true);
+    expect(w.params.blocks).toBeUndefined();
+    // 节点内嵌 widget 同步归一化 (迁移会补全局 Transport/Protocol 节点, 按 id 查找)
+    const nodeWidget = parsed.rfNodes?.find((n) => n.id === 'cmd1')?.data?.widget as typeof w;
+    expect(nodeWidget.params.frames).toHaveLength(1);
+    // 再次迁移幂等 (不重复包装)
+    const again = parseSnapshot(serializeSnapshot(parsed));
+    const w2 = again.widgets?.[0] as typeof w;
+    expect(w2.params.frames).toHaveLength(1);
+  });
+
+  it('detectPresentSections 正确识别含有的分区', () => {const snap: AppSnapshot = {
       version: 2,
       exportedAt: '',
       rfNodes: [],
@@ -157,5 +194,96 @@ describe('appExport 拆分备份', () => {
       transport: { kind: 'Serial', params: { port_name: '', baud_rate: 115200, data_bits: 8, parity: 'none', stop_bits: 'one', flow_control: 'none' } },
     };
     expect(detectPresentSections(snap)).toEqual(['nodeGraph', 'transportProtocol']);
+  });
+
+  it('v3 protocol 节点缺 schema → 按 config 工厂补齐 (幂等)', () => {
+    const snap = {
+      version: 3,
+      exportedAt: '2024-01-01T00:00:00Z',
+      rfNodes: [
+        { id: 'transport-1', type: 'transport', position: { x: 0, y: 0 }, data: { global: true, config: { kind: 'TestData', params: { channels: 4, sample_rate: 100, signal: 'Sine' } }, label: 'TestData' } },
+        { id: 'protocol-1', type: 'protocol', position: { x: 200, y: 0 }, data: { global: true, config: { kind: 'JustFloat', channels: 2 }, convertTo: null, channels: 2, label: 'JustFloat' } },
+      ],
+      rfEdges: [
+        { id: 'e-tp', source: 'transport-1', sourceHandle: 'rx', target: 'protocol-1', targetHandle: 'in' },
+      ],
+    };
+    const parsed = parseSnapshot(JSON.stringify(snap));
+    const protocol = parsed.rfNodes?.find((n) => n.id === 'protocol-1');
+    const schema = (protocol?.data as { schema?: { preset: string; decode: { type: string; portName?: string }[] } }).schema;
+    // schema 已补齐: JustFloat 预设 = 2×field + tail
+    expect(schema?.preset).toBe('justFloat');
+    expect(schema?.decode).toHaveLength(3);
+    expect(schema?.decode[0]).toMatchObject({ type: 'field', portName: 'ch0' });
+    // 幂等: 再次迁移 schema 保持不变
+    const again = parseSnapshot(serializeSnapshot(parsed));
+    const schema2 = (again.rfNodes?.find((n) => n.id === 'protocol-1')?.data as { schema?: unknown }).schema;
+    expect(schema2).toEqual(schema);
+  });
+});
+
+describe('applySnapshot 后端图清理', () => {
+  afterEach(() => {
+    useAppStore.setState({
+      controlTabs: [{ id: 'default', name: 'Tab 1', widgets: [] }],
+      activeControlTabId: 'default',
+      rfNodes: [],
+      rfEdges: [],
+    } as never);
+  });
+
+  it('替换 controlTabs 后对消失的 tab 调 remove_tab_graph (在存活 tab sync 之后)', async () => {
+    tauriMock.invoke.mockClear();
+    useAppStore.setState({
+      controlTabs: [
+        { id: 'default', name: 'Tab 1', widgets: [] },
+        { id: 'tab-old', name: 'Old', widgets: [] },
+      ],
+      activeControlTabId: 'default',
+      rfNodes: [],
+      rfEdges: [],
+    } as never);
+
+    await applySnapshot({
+      version: 3,
+      exportedAt: '',
+      sections: ['widgetsTabs'],
+      controlTabs: [{ id: 'default', name: 'Tab 1', widgets: [] }],
+    });
+
+    await vi.waitFor(() => {
+      expect(tauriMock.invoke).toHaveBeenCalledWith('remove_tab_graph', { tabId: 'tab-old' });
+    });
+    const calls = tauriMock.invoke.mock.calls as unknown as [string, unknown][];
+    const syncIdx = calls.findIndex(
+      ([cmd, args]) => cmd === 'update_tab_graph' && (args as { tabId: string }).tabId === 'default'
+    );
+    const removeIdx = calls.findIndex(([cmd]) => cmd === 'remove_tab_graph');
+    // 先同步存活 tab (全局节点重新托管), 再移除消失的 tab
+    expect(syncIdx).toBeGreaterThanOrEqual(0);
+    expect(removeIdx).toBeGreaterThan(syncIdx);
+  });
+
+  it('controlTabs 未变化时不调 remove_tab_graph', async () => {
+    tauriMock.invoke.mockClear();
+    useAppStore.setState({
+      controlTabs: [{ id: 'default', name: 'Tab 1', widgets: [] }],
+      activeControlTabId: 'default',
+      rfNodes: [],
+      rfEdges: [],
+    } as never);
+
+    await applySnapshot({
+      version: 3,
+      exportedAt: '',
+      sections: ['widgetsTabs'],
+      controlTabs: [{ id: 'default', name: 'Tab 1', widgets: [] }],
+    });
+
+    await vi.waitFor(() => {
+      expect(tauriMock.invoke).toHaveBeenCalledWith('update_tab_graph', expect.anything());
+    });
+    const calls = tauriMock.invoke.mock.calls as unknown as [string, unknown][];
+    expect(calls.some(([cmd]) => cmd === 'remove_tab_graph')).toBe(false);
   });
 });

@@ -1,19 +1,23 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { CanFrameBatch, CanFrame, CanDirection, CandleDeviceInfo } from '../../types';
-import { makeOrderedSink, subscribeSharded } from './shardedSubscription';
+import type {
+  CanFrameBatch,
+  CanFrame,
+  CanDirection,
+  CandleDeviceInfo,
+} from '../../types';
+import { subscribeDisplay } from './shardedSubscription';
 
 /// 订阅 CAN 帧数据 — 统一分片流 (增量 drain, 首批回溯最近历史, 之后严格增量无重复)
 /// 返回取消订阅函数
 export function subscribeCanFrames(
   onEvent: (batch: CanFrameBatch) => void,
-  options?: { intervalMs?: number; maxFrames?: number }
+  options?: { intervalMs?: number; maxFrames?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<CanFrameBatch>(
-    'subscribe_can_frames',
-    'unsubscribe_can_frames',
-    {},
-    makeOrderedSink(onEvent),
-    { intervalMs: options?.intervalMs, maxFrames: options?.maxFrames }
+  return subscribeDisplay<CanFrameBatch>(
+    { kind: 'can_frames' },
+    'can_frames',
+    onEvent,
+    { intervalMs: options?.intervalMs, maxItems: options?.maxFrames },
   );
 }
 
@@ -44,20 +48,27 @@ export interface CanFrameFilterOptions {
 export function subscribeCanFramesFiltered(
   filter: CanFrameFilterOptions,
   onEvent: (batch: CanFrameBatch) => void,
-  options?: { intervalMs?: number; maxFrames?: number }
+  options?: { intervalMs?: number; maxFrames?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<CanFrameBatch>(
-    'subscribe_can_frames_filtered',
-    'unsubscribe_can_frames',
-    { filter },
-    makeOrderedSink(onEvent),
-    { intervalMs: options?.intervalMs, maxFrames: options?.maxFrames }
+  return subscribeDisplay<CanFrameBatch>(
+    { kind: 'can_frames', filter },
+    'can_frames',
+    onEvent,
+    { intervalMs: options?.intervalMs, maxItems: options?.maxFrames },
   );
 }
 
 /// 发送 CAN 帧 (nodeId = 目标 Transport 节点 id; protocolNode = null 时后端沿字节平面自动解析下游 Protocol 节点)
-export function sendCanFrame(nodeId: string, frame: CanFrame, protocolNode?: string | null): Promise<void> {
-  return invoke('send_can_frame', { nodeId, protocolNode: protocolNode ?? null, frame });
+export function sendCanFrame(
+  nodeId: string,
+  frame: CanFrame,
+  protocolNode?: string | null,
+): Promise<void> {
+  return invoke('send_can_frame', {
+    nodeId,
+    protocolNode: protocolNode ?? null,
+    frame,
+  });
 }
 
 /// 同步查询: 获取最近 N 个 CAN 帧

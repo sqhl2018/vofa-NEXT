@@ -19,12 +19,13 @@ import { notify } from '../../lib/tauri/notifications';
 import { useContextMenu } from '../../lib/hooks/useContextMenu';
 import { transitionStore } from '../../lib/utils/transitionStore';
 import { dockDrag, type WidgetDragSpec } from '../../lib/dockDrag';
-import type { WidgetConfig, MathOp, FilterPresetKind, DomainType } from '../../types';
-import { UNARY_MATH_OPS } from '../../types';
-import { WidgetNode, getWidgetPorts } from '../nodes/WidgetNode';
+import type { WidgetConfig, MathOp, StrOp, FilterPresetKind } from '../../types';
+import { isUnaryMathOp } from '../../types';
+import { WidgetNode } from '../nodes/WidgetNode';
 import { TransportNode } from '../nodes/TransportNode';
 import { ProtocolNode } from '../nodes/ProtocolNode';
 import { GlobalNodeProperties } from '../nodes/GlobalNodeProperties';
+import { validateConnection } from '../../lib/utils/connectionRules';
 import { Maximize, LayoutGrid } from 'lucide-react';
 
 interface NodeEditorProps {
@@ -65,6 +66,21 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
   const addProtocolNode = useAppStore((s) => s.addProtocolNode);
   const setSidebarView = useAppStore((s) => s.setSidebarView);
   const reactFlow = useReactFlow();
+
+  const flyToRequest = useAppStore((s) => s.flyToRequest);
+  useEffect(() => {
+    if (!flyToRequest) return;
+    if (flyToRequest.tabId !== tabId) return;
+    const node = rfNodes.find((n) => n.id === flyToRequest.nodeId);
+    if (node) {
+      reactFlow.setCenter(node.position.x, node.position.y, {
+        duration: 400,
+        zoom: 1.5,
+      });
+    }
+    useAppStore.getState().clearFlyToRequest();
+  }, [flyToRequest, tabId, rfNodes, reactFlow]);
+
   // 控件拖拽悬停画布时的高亮 (dockDrag 控制器驱动)
   const [isDragOver, setIsDragOver] = useState(false);
   useEffect(() => dockDrag.subscribeCanvasHover(setIsDragOver), []);
@@ -97,7 +113,7 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
   // 按当前 tab 过滤节点: 本 tab 的 widget 节点 + 全部全局节点 (Transport/Protocol)
   const tabNodes = useMemo(
     () =>
-      rfNodes.filter((n) => n.data.tabId === tabId || n.data.global === true) as Node[],
+      rfNodes.filter((n) => n.data.tabId === tabId || n.data.global === true),
     [rfNodes, tabId]
   );
 
@@ -106,10 +122,24 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
     [tabNodes]
   );
 
-  const tabEdges = useMemo(
-    () => rfEdges.filter((e) => tabNodeIds.has(e.source) && tabNodeIds.has(e.target)) as Edge[],
-    [rfEdges, tabNodeIds]
-  );
+  const tabState = useAppStore((s) => s.tabStates[tabId]);
+  const EMPTY_EDGES: readonly string[] = [];
+  const tabErrorEdges = useAppStore((s) => s.tabErrorEdges[tabId] ?? EMPTY_EDGES);
+
+  const tabEdges = useMemo(() => {
+    const erroredSet = tabState === 'error' ? new Set(tabErrorEdges) : new Set<string>();
+    return rfEdges
+      .filter((e) => tabNodeIds.has(e.source) && tabNodeIds.has(e.target))
+      .map((e) => {
+        if (!erroredSet.has(e.id)) return e;
+        return {
+          ...e,
+          style: { ...(e.style ?? {}), stroke: '#ef4444', strokeWidth: 2 },
+          animated: true,
+          className: 'compile-error-edge',
+        };
+      });
+  }, [rfEdges, tabNodeIds, tabErrorEdges, tabState]);
 
   // 选中的全局节点 → 右侧属性面板
   const selectedGlobalNode = useMemo(
@@ -137,17 +167,23 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
       const widget = createWidget(spec.kind);
       // 算术控件: 应用拖拽时携带的 op
       if (widget.kind === 'Math' && spec.op) {
-        const mathWidget = widget as Extract<WidgetConfig, { kind: 'Math' }>;
+        const mathWidget = widget;
         mathWidget.params.op = spec.op as MathOp;
-        if (UNARY_MATH_OPS.includes(spec.op as MathOp)) {
+        if (isUnaryMathOp(spec.op as MathOp)) {
           mathWidget.params.inputCount = 1;
         }
         mathWidget.params.label = `Math ${spec.op}`;
       }
+      // 字符串控件: 应用拖拽时携带的 op
+      if (widget.kind === 'Str' && spec.op) {
+        const strWidget = widget;
+        strWidget.params.op = spec.op as StrOp;
+        strWidget.params.label = `Str ${spec.op}`;
+      }
       // 滤波器控件: 应用拖拽时携带的 preset
       if (widget.kind === 'Filter' && spec.preset) {
-        const filterWidget = widget as Extract<WidgetConfig, { kind: 'Filter' }>;
-        filterWidget.params.preset = spec.preset as FilterPresetKind;
+        const filterWidget = widget;
+        filterWidget.params.preset = spec.preset;
         filterWidget.params.label = `Filter ${spec.preset}`;
       }
       addWidget(widget, tabId, position);
@@ -163,38 +199,9 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
     return () => dockDrag.registerCanvasHandler(el, null);
   }, [createFromDrop]);
 
-  // 端口域解析: 全局节点按端口表 (rx/tx/in/out=字节, chN=时域); 控件端口按 getWidgetPorts 的 domain 标注
-  const resolveDomain = useCallback(
-    (nodeId: string | null, handleId: string | null | undefined, kind: 'source' | 'target'): DomainType | null => {
-      if (!nodeId || !handleId) return null;
-      const node = useAppStore.getState().rfNodes.find((n: Node) => n.id === nodeId);
-      if (!node) return null;
-      if (node.type === 'transport') {
-        if (kind === 'source' && handleId === 'rx') return 'bytes';
-        if (kind === 'target' && handleId === 'tx') return 'bytes';
-        return null;
-      }
-      if (node.type === 'protocol') {
-        if (handleId === 'in' || handleId === 'out') return 'bytes';
-        if (kind === 'source' && /^ch\d+$/.test(handleId)) return 'time';
-        return null;
-      }
-      const widget = node.data?.widget as WidgetConfig | undefined;
-      if (!widget) return null;
-      // RawData 输入端口是动态派生的 (src:<source>:<handle>), 静态端口表查不到 — 一律按时域,
-      // 否则频域输出可绕过域校验连进 RawData
-      if (widget.kind === 'RawData') return 'time';
-      // FrameDecoder 旧版回环字节输入口 (兼容旧图数据)
-      if (widget.kind === 'FrameDecoder' && kind === 'target' && handleId === 'loopbackIn') return 'bytes';
-      const ports = getWidgetPorts(widget);
-      const list = kind === 'source' ? ports.outputs : ports.inputs;
-      return list.find((p) => p.id === handleId)?.domain ?? null;
-    },
-    []
-  );
-
-  // 连线校验: 时域/频域/字节域端口必须同域, 跨域阻止并提示
-  // (字节口: Transport rx/tx, Protocol in/out, FrameDecoder in, Command loopbackOut)
+  // 连线校验 — 统一规则单一权威 (lib/utils/connectionRules): 节点存在 / 同 tab /
+  // 端口存在 / 域匹配 (time/freq/bytes/string 同域; RawData 是 bytes/time 双域 Sink
+  // 仅拒 freq)。与后端编译校验同域规则, 手动拖拽在此前置拦截并提示。
   const isValidConnection = useCallback(
     (conn: {
       source?: string | null;
@@ -202,18 +209,34 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
       sourceHandle?: string | null;
       targetHandle?: string | null;
     }) => {
-      const sd = resolveDomain(conn.source ?? null, conn.sourceHandle, 'source');
-      const td = resolveDomain(conn.target ?? null, conn.targetHandle, 'target');
-      if (sd && td && sd !== td) {
-        notify.warn(t(lang, 'domainMismatchTitle'), t(lang, 'domainMismatchMsg'), {
+      if (!conn.source || !conn.target) return false;
+      const state = useAppStore.getState();
+      const check = validateConnection(
+        {
+          nodes: state.rfNodes,
+          derivedPorts: state.derivedPorts,
+          detectedChannels: state.detectedChannels,
+        },
+        {
+          source: conn.source,
+          target: conn.target,
+          sourceHandle: conn.sourceHandle,
+          targetHandle: conn.targetHandle,
+        }
+      );
+      if (!check.ok) {
+        notify.warn(t(lang, 'connectionRejectedTitle'), check.message ?? t(lang, 'domainMismatchMsg'), {
           source: 'domain-mismatch',
         });
         return false;
       }
       return true;
     },
-    [resolveDomain, lang]
+    [lang]
   );
+
+  // 连线有效性不做前端自愈 — 后端编译是连线唯一权威, graph:source 回声即真值;
+  // 渲染层瞬时错误 (#008) 只说明端口重测尚未完成, 据此删边会误删后端认可的连线
 
   return (
     <div
@@ -221,6 +244,7 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
       ref={wrapperRef}
       onContextMenu={onCanvasContextMenu}
       data-dock-zone="canvas"
+      data-tour="canvas"
     >
       <ReactFlow
         nodes={tabNodes}
@@ -230,8 +254,9 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
         onConnect={onConnect}
         isValidConnection={isValidConnection}
         nodeTypes={nodeTypes}
+        defaultEdgeOptions={{ interactionWidth: 40, style: { strokeWidth: 2 } }}
         fitView
-        fitViewOptions={{ padding: 0.2 }}
+        fitViewOptions={{ padding: 0.2, minZoom: 1, maxZoom: 1 }}
         minZoom={0.2}
         maxZoom={2.5}
         proOptions={{ hideAttribution: true }}

@@ -4,7 +4,10 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { exit } from '@tauri-apps/plugin-process';
 import clsx from 'clsx';
 import { useAppStore } from '../../store/appStore';
+import { useHistoryStore } from '../../store/historyStore';
 import { useSettingsStore } from '../../store/settingsStore';
+import { getAvailableDataPanelEntries, type DataPanelEntry } from '../../store/slices/dataTabs';
+import { openDataPanelAndReveal } from '../../lib/utils/revealDataTab';
 import { t, type Lang } from '../../i18n';
 
 const APP_GITHUB = 'https://github.com/Horldsence/vofa-NEXT';
@@ -49,6 +52,7 @@ interface MenuAction {
   id: string;
   label: string;
   shortcut?: string;
+  disabled?: boolean;
   onClick: () => void;
 }
 
@@ -65,7 +69,7 @@ interface MenuDef {
 }
 
 /// 构建菜单定义 — 与 Rust 原生菜单 (src-tauri/src/menu.rs) 保持同等结构
-function buildMenus(lang: Lang): MenuDef[] {
+function buildMenus(lang: Lang, historyFlags: { canUndo: boolean; canRedo: boolean }): MenuDef[] {
   const L = (key: string) => t(lang, key);
   const app = useAppStore.getState;
   const settings = useSettingsStore.getState;
@@ -79,6 +83,19 @@ function buildMenus(lang: Lang): MenuDef[] {
     const s = app();
     s.toggleSidebar(s.sidebarView);
   };
+
+  /// 数据面板菜单条目 — 复用 dataTabs slice 的单一事实源;
+  /// 派生面板项随画布 widgets 变化 enabled/disabled
+  const entries = getAvailableDataPanelEntries(app(), app());
+  const entryToMenu = (e: DataPanelEntry): MenuAction => ({
+    kind: 'item',
+    id: `panel-${e.type}`,
+    label: e.available ? L(e.labelKey) : `${L(e.labelKey)} (${L('panelOpenNoWidget')})`,
+    disabled: !e.available,
+    onClick: () => openDataPanelAndReveal(e.open),
+  });
+  const standalone = entries.filter((e) => e.group === 'standalone').map(entryToMenu);
+  const derived = entries.filter((e) => e.group === 'derived').map(entryToMenu);
 
   return [
     {
@@ -100,11 +117,34 @@ function buildMenus(lang: Lang): MenuDef[] {
       ],
     },
     {
+      id: 'panel',
+      label: L('menuPanel'),
+      entries: [
+        ...standalone,
+        ...(standalone.length && derived.length ? [{ kind: 'separator' as const }] : []),
+        ...derived,
+      ],
+    },
+    {
       id: 'edit',
       label: L('menuEdit'),
       entries: [
-        { kind: 'item', id: 'undo', label: L('menuUndo'), shortcut: 'Ctrl+Z', onClick: () => execEditCommand('undo') },
-        { kind: 'item', id: 'redo', label: L('menuRedo'), shortcut: 'Ctrl+Y', onClick: () => execEditCommand('redo') },
+        {
+          kind: 'item',
+          id: 'undo',
+          label: L('menuUndo'),
+          shortcut: 'Ctrl+Z',
+          disabled: !historyFlags.canUndo,
+          onClick: () => useHistoryStore.getState().undo(),
+        },
+        {
+          kind: 'item',
+          id: 'redo',
+          label: L('menuRedo'),
+          shortcut: 'Ctrl+Y',
+          disabled: !historyFlags.canRedo,
+          onClick: () => useHistoryStore.getState().redo(),
+        },
         { kind: 'separator' },
         { kind: 'item', id: 'cut', label: L('menuCut'), shortcut: 'Ctrl+X', onClick: () => execEditCommand('cut') },
         { kind: 'item', id: 'copy', label: L('menuCopy'), shortcut: 'Ctrl+C', onClick: () => execEditCommand('copy') },
@@ -169,8 +209,10 @@ function buildMenus(lang: Lang): MenuDef[] {
 /// - 下拉面板复用 context-menu 视觉样式, 保证深色主题一致
 export const MenuBar = memo(function MenuBar() {
   const lang = useAppStore((s) => s.lang);
+  const canUndo = useHistoryStore((s) => s.canUndo);
+  const canRedo = useHistoryStore((s) => s.canRedo);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
-  const menus = useMemo(() => buildMenus(lang), [lang]);
+  const menus = useMemo(() => buildMenus(lang, { canUndo, canRedo }), [lang, canUndo, canRedo]);
   const isWindows = useMemo(isWindowsPlatform, []);
 
   // Windows 平台快捷键 — 原生菜单已停用, 此处接管加速键
@@ -288,7 +330,10 @@ export const MenuBar = memo(function MenuBar() {
                       key={entry.id}
                       type="button"
                       role="menuitem"
-                      className="context-menu-item"
+                      className={clsx(
+                        'context-menu-item',
+                        entry.disabled && 'opacity-50 cursor-not-allowed pointer-events-none'
+                      )}
                       style={{ height: 26 }}
                       onClick={handleItemClick(entry)}
                     >

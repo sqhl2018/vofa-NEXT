@@ -11,6 +11,7 @@ import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { LazyStore } from '@tauri-apps/plugin-store';
 import type { Node, Edge } from '@xyflow/react';
 import { useAppStore } from '../../store/appStore';
+import { rebaseHistory } from '../../store/historyStore';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useDockStore, type DockNode, type DockCard } from '../../store/dockStore';
 import { useLayoutStore, type SidebarDock } from '../../store/layoutStore';
@@ -19,7 +20,7 @@ import type { AppSettings } from '../../settings/defaults';
 import type { ControlTab, DataTab, ProtocolConfig, TransportConfig, WidgetConfig } from '../../types';
 import { api } from './tauri';
 import { rawDataPortId } from '../utils/nodeDef';
-import { rawDataBuffer } from '../buffers/dataBuffer';
+import { setRawDataPreviewCapacity } from '../buffers/rawDataPreviewRegistry';
 import { canFrameBuffer } from '../buffers/canBuffer';
 import { logicSampleBuffer } from '../buffers/logicBuffer';
 import { notify, formatError } from './notifications';
@@ -27,6 +28,8 @@ import { t } from '../../i18n';
 import { DEFAULT_SERIAL } from '../../store/slices/connection';
 import { DEFAULT_PROTOCOL } from '../../store/slices/protocol';
 import { getEffectiveChannels } from '../../store/appStoreHelpers';
+import { schemaFromProtocolConfig } from '../utils/protocolSchema';
+import { normalizeCommandConfig } from '../utils/commandFrames';
 import { getAllRawDataViewPrefs, useRawDataViewStore, type RawDataViewPrefs } from '../buffers/rawDataViewStore';
 
 /// 备份分区 — 拆分备份/模板的最小单元
@@ -132,7 +135,8 @@ export function collectSnapshot(): AppSnapshot {
     version: 3,
     exportedAt: new Date().toISOString(),
     sections: ALL_BACKUP_SECTIONS,
-    settings: useSettingsStore.getState().settings,
+    // 导出剥离 API key — 密钥不入备份文件 (明文扩散面)
+    settings: stripApiKey(useSettingsStore.getState().settings),
     widgets: app.widgets,
     controlTabs: app.controlTabs,
     dataTabs: app.dataTabs,
@@ -234,13 +238,24 @@ const LEGACY_CHANNEL_SOURCE_PREFIX = '__channel_source__';
 /// - 顶层 transport/protocol 单例配置 → 一对全局 Transport + Protocol 节点
 /// - 旧通道源节点删除, 其 chN 出边改写为从 Protocol 节点发出
 /// - FrameDecoder 旧字节输入口 loopbackIn → in
+/// - Command 旧版单帧配置 (blocks 在顶层) → frames 多帧结构
+/// - Protocol 节点缺 schema → 按 config 工厂补齐 (协议 schema 化)
 /// - 追加 Transport.rx → Protocol.in 字节边 (两者皆存在且尚无字节边时)
 /// 已是 v3 的快照原样返回 (幂等)
 export function migrateSnapshotToV3(snap: AppSnapshot): AppSnapshot {
   const hasLegacyChannelSource = (snap.rfNodes ?? []).some((n) => n.type === 'channelSource');
   const hasLegacySingletons = snap.transport != null || snap.protocol != null;
   const hasLegacyLoopbackIn = (snap.rfEdges ?? []).some((e) => e.targetHandle === 'loopbackIn');
-  if (snap.version === 3 && !hasLegacyChannelSource && !hasLegacySingletons && !hasLegacyLoopbackIn) {
+  // protocol 节点缺 schema (schema 化前的 v3 快照)
+  const hasProtocolMissingSchema = (snap.rfNodes ?? []).some(
+    (n) => n.data?.global === true && n.type === 'protocol' && n.data.schema == null
+  );
+  const isLegacyCommand = (w: WidgetConfig | undefined): boolean =>
+    w?.kind === 'Command' && !Array.isArray((w.params as { frames?: unknown }).frames);
+  const hasLegacyCommand =
+    (snap.widgets ?? []).some(isLegacyCommand) ||
+    (snap.rfNodes ?? []).some((n) => isLegacyCommand(n.data?.widget as WidgetConfig | undefined));
+  if (snap.version === 3 && !hasLegacyChannelSource && !hasLegacySingletons && !hasLegacyLoopbackIn && !hasLegacyCommand && !hasProtocolMissingSchema) {
     return { ...snap, version: 3 };
   }
 
@@ -252,7 +267,21 @@ export function migrateSnapshotToV3(snap: AppSnapshot): AppSnapshot {
   for (const n of snap.rfNodes ?? []) {
     if (n.type === 'channelSource') continue; // 删除通道源节点
     if (n.data?.global === true && n.type === 'transport' && !transportId) transportId = n.id;
-    if (n.data?.global === true && n.type === 'protocol' && !protocolId) protocolId = n.id;
+    if (n.data?.global === true && n.type === 'protocol') {
+      if (!protocolId) protocolId = n.id;
+      // 缺 schema → 按 config 工厂补齐 (幂等: 已有 schema 原样保留)
+      if (n.data.schema == null) {
+        const config = n.data.config as ProtocolConfig;
+        rfNodes.push({ ...n, data: { ...n.data, schema: schemaFromProtocolConfig(config) } });
+        continue;
+      }
+    }
+    // Command 旧版单帧配置 → frames (节点内嵌 widget 与 widgets 数组需同步归一化)
+    const w = n.data?.widget as WidgetConfig | undefined;
+    if (isLegacyCommand(w) && w?.kind === 'Command') {
+      rfNodes.push({ ...n, data: { ...n.data, widget: { kind: 'Command', params: normalizeCommandConfig(w.params) } } });
+      continue;
+    }
     rfNodes.push(n);
   }
 
@@ -265,7 +294,7 @@ export function migrateSnapshotToV3(snap: AppSnapshot): AppSnapshot {
       position: { x: 40, y: 40 },
       data: { global: true, config: snap.transport ?? DEFAULT_SERIAL, label: 'Transport' },
       selected: false,
-    } as Node);
+    });
   }
   if (!protocolId) {
     protocolId = MIGRATED_PROTOCOL_ID;
@@ -279,6 +308,7 @@ export function migrateSnapshotToV3(snap: AppSnapshot): AppSnapshot {
         config,
         convertTo: null,
         channels: getEffectiveChannels(config, null),
+        schema: schemaFromProtocolConfig(config),
         label: 'Protocol',
       },
       selected: false,
@@ -313,7 +343,13 @@ export function migrateSnapshotToV3(snap: AppSnapshot): AppSnapshot {
   }
 
   const { transport: _t, protocol: _p, ...rest } = snap;
-  return { ...rest, version: 3, rfNodes, rfEdges };
+  // widgets 数组内的 Command 旧版单帧配置 → frames
+  const widgets = snap.widgets?.map((w) =>
+    isLegacyCommand(w) && w.kind === 'Command'
+      ? { kind: 'Command' as const, params: normalizeCommandConfig(w.params) }
+      : w
+  );
+  return { ...rest, version: 3, rfNodes, rfEdges, widgets };
 }
 
 /// 检测快照实际包含哪些分区 (供拆分备份导入时的勾选预填), 按 ALL_BACKUP_SECTIONS 顺序返回
@@ -365,20 +401,33 @@ function applyDataCapacity(settings: AppSettings) {
   api.setLogicBufferCapacity(data.logicBufferSamples).catch((e: unknown) =>
     console.warn('[appExport] 设置逻辑缓冲区容量失败:', e)
   );
-  rawDataBuffer.setCapacity(data.rawDataBufferBytes);
+  setRawDataPreviewCapacity(data.rawDataBufferBytes);
   canFrameBuffer.setCapacity(data.canBufferFrames);
   logicSampleBuffer.setCapacity(data.logicBufferSamples);
 }
 
+/// 剥离 AI API key — 钥匙串之外的任何副本 (磁盘 / 备份文件) 都不携带密钥
+function stripApiKey(settings: AppSettings): AppSettings {
+  return { ...settings, ai: { ...settings.ai, apiKey: '' } };
+}
+
 /// 恢复设置到 settings store, 并同步应用到磁盘 / 主题 / 容量
 async function applySettings(settings: AppSettings): Promise<void> {
+  // 导入文件中的密钥 (旧版备份) 迁入钥匙串, 不再落盘
+  if (settings.ai.apiKey) {
+    try {
+      await api.aiKeychainSet(settings.ai.adapter, settings.ai.apiKey);
+    } catch (e) {
+      console.warn('[appExport] 密钥迁入钥匙串失败:', e);
+    }
+  }
   useSettingsStore.setState({ settings });
   applyAppearance(settings.appearance);
   applyDataCapacity(settings);
   // 持久化到磁盘 (settings.json), 保证重启后仍生效
   try {
     const store = new LazyStore('settings.json');
-    await store.set('app', settings);
+    await store.set('app', stripApiKey(settings));
   } catch (e) {
     console.warn('[appExport] 设置持久化失败:', e);
   }
@@ -402,6 +451,8 @@ export async function applySnapshot(
 ): Promise<void> {
   const migrated = migrateSnapshotToV3(snap);
   const want = new Set(resolveSections(migrated, opts));
+  // 应用前存在的 controlTabs — 应用后消失的 tab 需清理其后端残留图
+  const prevTabIds = useAppStore.getState().controlTabs.map((t) => t.id);
 
   // 1. 设置
   if (want.has('settings') && migrated.settings) {
@@ -435,8 +486,27 @@ export async function applySnapshot(
     const patch: Record<string, unknown> = {};
     if (migrated.widgets) patch.widgets = migrated.widgets;
     if (migrated.controlTabs) patch.controlTabs = migrated.controlTabs;
-    if (migrated.dataTabs) patch.dataTabs = migrated.dataTabs;
-    if (migrated.activeDataTabId != null) patch.activeDataTabId = migrated.activeDataTabId;
+    if (migrated.dataTabs) {
+      // 兜底注入 fixed compile-errors / compile-results Tab
+      // 老快照 (或外部导入的快照) 可能不包含; 缺一补一, 已存在则跳过
+      const fixedTabs: DataTab[] = [
+        { id: 'compile-errors-fixed', type: 'compile-errors', name: 'Compile Errors', closable: false },
+        { id: 'compile-results-fixed', type: 'compile-results', name: 'Compile Results', closable: false },
+      ];
+      const have = new Set(migrated.dataTabs.map((t) => t.id));
+      const mergedDataTabs = [...migrated.dataTabs];
+      for (const ft of fixedTabs) {
+        if (!have.has(ft.id)) mergedDataTabs.push(ft);
+      }
+      patch.dataTabs = mergedDataTabs;
+    }
+    if (migrated.activeDataTabId != null) {
+      patch.activeDataTabId = migrated.activeDataTabId;
+    } else {
+      // 快照未指定活动数据 Tab → 兜底到 compile-results-fixed (须存在)
+      const ids = (patch.dataTabs as DataTab[] | undefined)?.map((t) => t.id) ?? [];
+      if (ids.includes('compile-results-fixed')) patch.activeDataTabId = 'compile-results-fixed';
+    }
     if (migrated.activeControlTabId != null) patch.activeControlTabId = migrated.activeControlTabId;
     useAppStore.setState(patch);
     if (migrated.rawDataViewPrefs) {
@@ -476,10 +546,22 @@ export async function applySnapshot(
 
   // 6. 重新同步后端节点图 (节点图或标签页变化后)
   if (want.has('nodeGraph') || want.has('widgetsTabs') || want.has('transportProtocol')) {
-    for (const tab of useAppStore.getState().controlTabs) {
-      useAppStore.getState().syncTabGraph(tab.id);
-    }
+    // 应用后消失的 tab: 后端仍残留其图与其名下的全局节点, 须显式移除。
+    // 顺序: 先同步存活 tab (全局节点重新托管到存活 tab 名下), 再移除消失的 tab
+    // (必须等同步落地后再 remove — 先后顺序即正确性本身)
+    const syncs = useAppStore
+      .getState()
+      .controlTabs.map((tab) => useAppStore.getState().syncTabGraph(tab.id));
+    void Promise.all(syncs).then(() => {
+      const currentTabIds = new Set(useAppStore.getState().controlTabs.map((t) => t.id));
+      for (const tabId of prevTabIds) {
+        if (!currentTabIds.has(tabId)) useAppStore.getState().removeTabGraph(tabId);
+      }
+    });
   }
+
+  // 7. 快照应用是批量覆盖而非用户单步操作 — 撤销历史重置为新基线
+  rebaseHistory('opImportWorkspace');
 }
 
 // ==================== 导出 / 导入入口 ====================

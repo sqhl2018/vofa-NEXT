@@ -2,6 +2,9 @@
 //!
 //! 模板包含节点图 + 窗口组织 + 传输/协议配置 (不含用户设置)。
 //! 应用方式通过系统 (Tauri) 对话框确认: 替换当前工作区 / 合并为新标签页。
+//!
+//! 注: 「打开数据面板」入口已迁出到独立 Sidebar view (`panels`), 见
+//! DataPanelsPanel.tsx。
 
 import {
   Sigma,
@@ -69,7 +72,7 @@ export function QuickStartPanel() {
   };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden gap-3">
+    <div className="flex flex-col h-full overflow-hidden gap-3" data-tour="quickstart-panel">
       <div className="text-xs text-text-secondary leading-relaxed">
         {t(lang, 'quickStartDesc')}
       </div>

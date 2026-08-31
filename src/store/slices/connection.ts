@@ -1,8 +1,12 @@
 import { api } from '../../lib/tauri/tauri';
-import { rawDataBuffer, waveformWindow } from '../../lib/buffers/dataBuffer';
-import { notify, formatError } from '../../lib/tauri/notifications';
+import { waveformWindow } from '../../lib/buffers/dataBuffer';
+import { clearRawDataTransportBuffers } from '../../lib/buffers/rawDataTransportBuffer';
+import { resetPortSampleStoresForSource } from '../../lib/data/dataClient';
+import { notify } from '../../lib/tauri/notifications';
+import { nodeError } from '../../lib/tauri/errorGuidance';
 import { t } from '../../i18n';
 import { downstreamProtocolOf, type TransportNodeData, type ProtocolNodeData } from '../appStoreHelpers';
+import { schemaFromProtocolConfig } from '../../lib/utils/protocolSchema';
 import { useSettingsStore } from '../settingsStore';
 import type { ConnectionState, PortInfo, ProtocolConfig, TransportConfig, TransportStats, WidgetBinding } from '../../types';
 
@@ -32,17 +36,7 @@ export const EMPTY_NODE_STATS: NodeStats = {
   rxDroppedTotal: 0,
 };
 
-/// 通道自动检测轮询器 (按 Protocol 节点 id)
-export let detectedChannelsPollers: Record<string, ReturnType<typeof setInterval>> = {};
-
-export function setDetectedChannelsPoller(nodeId: string, poller: ReturnType<typeof setInterval> | null) {
-  if (poller) detectedChannelsPollers[nodeId] = poller;
-  else delete detectedChannelsPollers[nodeId];
-}
-export function cleanupDetectedChannelsPollers() {
-  for (const p of Object.values(detectedChannelsPollers)) clearInterval(p);
-  detectedChannelsPollers = {};
-}
+/// 节点错误通知文案 — 统一入口 (settings 开关在 errorGuidance 内读取)
 
 export interface ConnectionSlice {
   /// 连接状态 — 按 Transport 节点 id
@@ -52,9 +46,6 @@ export interface ConnectionSlice {
   /// TestData 生成开关 — 按 Transport 节点 id
   testDataRunning: Record<string, boolean>;
   ports: PortInfo[];
-  /// RawData 视图选中的字节源 (Transport 节点 id; null = 自动选第一个)
-  rawDataSourceNodeId: string | null;
-
   refreshPorts: () => Promise<void>;
   connectNode: (nodeId: string) => Promise<void>;
   disconnectNode: (nodeId: string) => Promise<void>;
@@ -64,7 +55,6 @@ export interface ConnectionSlice {
   sendAndCapture: (nodeId: string, protocolNode: string, data: number[]) => Promise<void>;
   sendText: (nodeId: string, text: string) => Promise<void>;
   sendWidgetValue: (nodeId: string, protocolNode: string | null, binding: WidgetBinding, value: number) => Promise<void>;
-  setRawDataSourceNodeId: (nodeId: string | null) => void;
 }
 
 export function createConnectionSlice(set: any, get: any): ConnectionSlice {
@@ -73,8 +63,6 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
     nodeStats: {},
     testDataRunning: {},
     ports: [],
-    rawDataSourceNodeId: null,
-
     refreshPorts: async () => {
       try {
         const ports = await api.listPorts();
@@ -83,7 +71,7 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
         const lang = get().lang;
         notify.error(
           t(lang, 'notifRefreshPortsFailed'),
-          formatError(e),
+          nodeError(lang, e),
           {
             source: 'refreshPorts',
             actions: [{ label: t(lang, 'notifRetry'), run: () => { void get().refreshPorts(); } }],
@@ -104,6 +92,13 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
       const protocol: ProtocolConfig = protocolNode
         ? (protocolNode.data as ProtocolNodeData).config
         : { kind: 'JustFloat', channels: null };
+      // schema 一并下发 (旧数据缺 schema 时按 config 回退构造; 无下游协议节点 = null)
+      const schema = protocolNode
+        ? ((protocolNode.data as ProtocolNodeData).schema ?? schemaFromProtocolConfig(protocol))
+        : null;
+      set((s: any) => ({
+        connectionStates: { ...s.connectionStates, [nodeId]: 'Connecting' as ConnectionState },
+      }));
       try {
         // 后端容量按源生效 — 连接前应用当前设置
         const cap = useSettingsStore.getState().settings.data;
@@ -113,16 +108,16 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
           await api.clearBuffer(downstreamId);
         }
         await api.clearRawDataBuffer(nodeId);
-        rawDataBuffer.clear();
+        clearRawDataTransportBuffers(nodeId);
+        if (downstreamId) resetPortSampleStoresForSource(downstreamId);
         waveformWindow.clear();
-        await api.openTransport(nodeId, config, protocol);
+        await api.openTransport(nodeId, config, protocol, schema);
         set((s: any) => ({
           connectionStates: { ...s.connectionStates, [nodeId]: 'Connected' as ConnectionState },
           testDataRunning: { ...s.testDataRunning, [nodeId]: false },
           nodeStats: { ...s.nodeStats, [nodeId]: { ...EMPTY_NODE_STATS } },
           rawDataVersion: Date.now(),
         }));
-        get().ensureChannelsPolling();
       } catch (e) {
         const lang = get().lang;
         set((s: any) => ({
@@ -130,7 +125,7 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
         }));
         notify.error(
           t(lang, 'notifConnectFailed'),
-          formatError(e),
+          nodeError(lang, e),
           {
             source: 'connect',
             actions: [{ label: t(lang, 'notifRetry'), run: () => { void get().connectNode(nodeId); } }],
@@ -140,17 +135,23 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
     },
 
     disconnectNode: async (nodeId) => {
+      const downstreamId = downstreamProtocolOf(nodeId, get().rfEdges, get().rfNodes);
+      set((s: any) => ({
+        connectionStates: { ...s.connectionStates, [nodeId]: 'Disconnected' as ConnectionState },
+        testDataRunning: { ...s.testDataRunning, [nodeId]: false },
+      }));
+      clearRawDataTransportBuffers(nodeId);
+      if (downstreamId) resetPortSampleStoresForSource(downstreamId);
       try {
         await api.closeTransport(nodeId);
-        set((s: any) => ({
-          connectionStates: { ...s.connectionStates, [nodeId]: 'Disconnected' as ConnectionState },
-          testDataRunning: { ...s.testDataRunning, [nodeId]: false },
-        }));
       } catch (e) {
         const lang = get().lang;
+        set((s: any) => ({
+          connectionStates: { ...s.connectionStates, [nodeId]: 'Error' as ConnectionState },
+        }));
         notify.error(
           t(lang, 'notifDisconnectFailed'),
-          formatError(e),
+          nodeError(lang, e),
           {
             source: 'disconnect',
             actions: [{ label: t(lang, 'notifRetry'), run: () => { void get().disconnectNode(nodeId); } }],
@@ -165,7 +166,7 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
         set((s: any) => ({ testDataRunning: { ...s.testDataRunning, [nodeId]: true } }));
       } catch (e) {
         const lang = get().lang;
-        notify.error(t(lang, 'notifStartTestDataFailed'), formatError(e), { source: 'startTestData' });
+        notify.error(t(lang, 'notifStartTestDataFailed'), nodeError(lang, e), { source: 'startTestData' });
       }
     },
 
@@ -175,7 +176,7 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
         set((s: any) => ({ testDataRunning: { ...s.testDataRunning, [nodeId]: false } }));
       } catch (e) {
         const lang = get().lang;
-        notify.error(t(lang, 'notifStopTestDataFailed'), formatError(e), { source: 'stopTestData' });
+        notify.error(t(lang, 'notifStopTestDataFailed'), nodeError(lang, e), { source: 'stopTestData' });
       }
     },
 
@@ -184,7 +185,7 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
         await api.sendRaw(nodeId, data);
       } catch (e) {
         const lang = get().lang;
-        notify.error(t(lang, 'notifSendFailed'), formatError(e), { source: 'sendData' });
+        notify.error(t(lang, 'notifSendFailed'), nodeError(lang, e), { source: 'sendData' });
       }
     },
 
@@ -208,7 +209,7 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
         }));
       } catch (e) {
         const lang = get().lang;
-        notify.error(t(lang, 'notifSendFailed'), formatError(e), { source: 'sendAndCapture' });
+        notify.error(t(lang, 'notifSendFailed'), nodeError(lang, e), { source: 'sendAndCapture' });
       }
     },
 
@@ -217,7 +218,7 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
         await api.sendString(nodeId, text);
       } catch (e) {
         const lang = get().lang;
-        notify.error(t(lang, 'notifSendFailed'), formatError(e), { source: 'sendText' });
+        notify.error(t(lang, 'notifSendFailed'), nodeError(lang, e), { source: 'sendText' });
       }
     },
 
@@ -226,10 +227,8 @@ export function createConnectionSlice(set: any, get: any): ConnectionSlice {
         await api.sendWidgetValue(nodeId, protocolNode, binding, value);
       } catch (e) {
         const lang = get().lang;
-        notify.error(t(lang, 'notifSendFailed'), formatError(e), { source: 'sendWidget' });
+        notify.error(t(lang, 'notifSendFailed'), nodeError(lang, e), { source: 'sendWidget' });
       }
     },
-
-    setRawDataSourceNodeId: (nodeId) => set({ rawDataSourceNodeId: nodeId }),
   };
 }

@@ -34,7 +34,12 @@ interface ChannelOption {
   key: string;
   sourceId: string;
   sourceHandle: string | undefined;
+  /// 字节平面源 (Transport/Protocol) 的完整标签 (如 "Serial (a1b2)·rx") — 缺省回退 handle/widget 标签
+  label?: string;
 }
+
+/// 选中源连接状态 (null = 该通道无固定连接语义, 不显示徽章)
+export type RawDataConnState = 'Connected' | 'Connecting' | 'Disconnected' | 'Error';
 
 interface Props {
   // state
@@ -52,6 +57,7 @@ interface Props {
   modeCount: number;
   droppedBytes: number;
   channelOptions: ChannelOption[];
+  connState: RawDataConnState | null;
   selectionCount: number;
   copyFeedback: boolean;
   userScrolledRef: React.MutableRefObject<boolean>;
@@ -87,6 +93,7 @@ export function RawDataViewHeader({
   modeCount,
   droppedBytes,
   channelOptions,
+  connState,
   selectionCount,
   copyFeedback,
   userScrolledRef,
@@ -107,7 +114,7 @@ export function RawDataViewHeader({
 }: Props) {
   return (
     <>
-      <div className="flex gap-1 p-1.5 items-center border-b border-border bg-bg-panel-header flex-shrink-0">
+      <div className="flex gap-1 p-1.5 items-center border-b border-border bg-bg-panel-header shrink-0">
         <div className="flex items-center bg-bg-input rounded p-0.5">
           {GROUPING_OPTIONS.map((opt) => (
             <button
@@ -151,7 +158,7 @@ export function RawDataViewHeader({
         </div>
 
         <div className={`flex items-center gap-1 bg-bg-input rounded px-1.5 py-0.5 border border-border ${isNum ? 'opacity-40 pointer-events-none' : ''}`}>
-          <Search size={12} className="text-text-secondary flex-shrink-0" />
+          <Search size={12} className="text-text-secondary shrink-0" />
           <input
             type="text"
             disabled={isNum}
@@ -170,18 +177,38 @@ export function RawDataViewHeader({
           )}
         </div>
 
+        {/* 选中源连接状态徽章 — Connected 不显示 (避免常驻噪音); Error 红灯 */}
+        {connState && connState !== 'Connected' && (
+          <span
+            className={`flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded-sm border shrink-0 ${
+              connState === 'Error'
+                ? 'text-red border-red/40 bg-red/10'
+                : connState === 'Connecting'
+                  ? 'text-yellow border-yellow/40 bg-yellow/10'
+                  : 'text-text-secondary border-border bg-bg-input'
+            }`}
+            title={t(lang, connState === 'Error' ? 'connError' : connState === 'Connecting' ? 'connecting' : 'notConnected')}
+          >
+            <span
+              className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                connState === 'Error' ? 'bg-red animate-pulse' : connState === 'Connecting' ? 'bg-yellow animate-pulse' : 'bg-text-muted'
+              }`}
+            />
+            {t(lang, connState === 'Error' ? 'connError' : connState === 'Connecting' ? 'connecting' : 'notConnected')}
+          </span>
+        )}
+
         {channelOptions.length > 0 && (
-          <label className="flex items-center gap-1 text-xs text-text-secondary flex-shrink-0">
+          <label className="flex items-center gap-1 text-xs text-text-secondary shrink-0">
             <span>{t(lang, 'rawDataChannel')}</span>
             <select
               value={channel}
               onChange={(e) => onChannelChange(e.target.value)}
               className="bg-bg-input border border-border rounded px-1 py-0.5 text-xs font-mono text-text-primary transition-colors hover:border-accent focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/40 cursor-pointer max-w-[160px]"
             >
-              <option value="global">{t(lang, 'rawDataGlobal')}</option>
               {channelOptions.map((o) => (
                 <option key={o.key} value={o.key}>
-                  {o.sourceHandle || sourceLabel(o.sourceId)}
+                  {o.label ?? (o.sourceHandle || sourceLabel(o.sourceId))}
                 </option>
               ))}
             </select>

@@ -83,13 +83,24 @@ The UI features a **dock-style window layout**: control canvases and data views 
 ### Node Editor & Dataflow
 
 - Built on **React Flow** — drag widgets from the sidebar onto the canvas and wire up dataflows.
-- Backend **DAG engine** (`vofa-next-nodes`) compiles the graph into a topological order and evaluates all node outputs per frame, with cycle detection.
+- Backend **DAG engine** (`node_engine`) compiles the graph into a topological order and evaluates all node outputs per frame, with cycle detection.
 - Node kinds: `ChannelSource`, `Input`, `Math`, `Filter`, `SpectrumSink`, `FrameDecoder`, `Custom` (JS), `Sink`.
 - **Math nodes**: Add / Sub / Mul / Div / Avg / Min / Max / Abs / Neg / Square / Sqrt / Sin / Cos / Tan / Log.
 - **Filter nodes**: Lowpass / Highpass / Bandpass / Bandstop (FIR coefficients or IIR biquad), with cross-frame state persistence.
+- **String nodes**: substring ops (Mid / Left / Replace …) plus conversion ops — **Format** (`{0:.2}` template → text), **Parse** (extract the first number from text, decimal or 0x hex), **EncodeHex** — bridging waveform channels and text protocols in both directions. RawData sources expose their bytes as UTF-8 text through the `str` port.
+- **TextOut node**: sends graph-produced text back out of any transport (dynamic send-back). Rate-limited by value change + minimum interval; manual "Send now" button included.
+- **Protocol conversion chain**: each Protocol node can re-encode its decoded frames into another protocol and push them along its `out` port — e.g. JustFloat → FireWater feeding another transport; RawData passes raw bytes through unchanged.
 - **SpectrumSink**: block-based FFT with selectable window (Hann / Hamming / Blackman / Rect) and output modes (Magnitude / Power / PSD / dB), driven by an independent 30 FPS ticker.
 - **FrameDecoder**: block-based byte-stream parser (Header / Length / Id / Field / Bitfield / Checksum / Tail) with multi-frame dispatch via `match_id` and checksum validation.
 - **Custom JS nodes**: user JavaScript runs in a sandboxed iframe; outputs are posted back to the backend graph.
+
+### Operation History · Undo / Redo / Time Travel
+
+- **Snapshot-based undo stack** — canvas actions (node add/remove, wiring, widget config, tab management) are recorded automatically onto a timeline; session-scoped, up to 200 steps.
+- **Shortcuts** — `Ctrl+Z` to undo, `Ctrl+Y` to redo; continuous gestures such as node dragging or slider tweaks coalesce into a single entry.
+- **Operation History panel** — timeline list with newest first and badges colored by node kind (edges show two-tone endpoint dots); clicking any entry jumps straight back to that moment (snapshot rollback). The current entry is highlighted, and entries above it appear grayed out as "Undone · redoable" — click them to redo.
+- **Branch semantics** — editing after an undo discards the redo branch as usual; importing a backup or applying a template rebases the timeline onto a fresh baseline.
+- **Panel entry** — "Open Operation History" in the "＋" menu of the data card title bar; also practiced hands-on in the guided tour.
 
 ### Displays & Widgets
 
@@ -129,6 +140,13 @@ The UI features a **dock-style window layout**: control canvases and data views 
 - Transparent window with acrylic / vibrancy effect (macOS).
 - Native OS notifications via `tauri-plugin-notification`.
 - Structured logging via `tauri-plugin-log` (stdout / log dir / webview).
+
+### AI Assistant
+
+- **Streaming AI chat** — a dockable chat panel (right side by default; drag its title bar to re-dock left / bottom or float, layout persisted) with **Markdown rendering** (tables, code highlighting, copyable code blocks / messages) and multi-session management (create / rename / delete, history persisted on the Rust side across restarts).
+- **26+ LLM providers** — OpenAI / Anthropic / Gemini / DeepSeek / Qwen / Kimi / GLM / Ollama / OpenRouter etc., with [**OrcaRouter**](https://orcarouter.ai) as the featured default (one key for all vendors; [get an API key via our referral link](https://www.orcarouter.ai/ref/ref_1f7582998bdadbe7e0f3) to support the project).
+- **Tool calling (MCP client)** — the model can call tools from external MCP servers (stdio / HTTP) during a conversation, with per-call tracing.
+- **MCP server (inbound)** — the app exposes its own capabilities (serial send, waveform read, node-graph editing…) as MCP tools at `http://127.0.0.1:{port}/mcp`, so Claude Desktop / other MCP clients can drive VOFA-NEXT directly.
 
 ## Usage Guide
 
@@ -174,6 +192,7 @@ The default layout looks like this (all panels can be freely rearranged):
 ### Common Actions
 
 - **Settings**: `Ctrl+,` / `Cmd+,` or the gear icon in the activity bar; full-app config export / import is available (backup to a single JSON file).
+- **Undo & time travel**: `Ctrl+Z` to undo, `Ctrl+Y` to redo; clicking any entry in the Operation History panel jumps back to that moment (see Core Features).
 - **Refresh ports**: the refresh button in the status bar or the context menu.
 - **Help & onboarding**: the help icon at the bottom of the activity bar opens the Help Center anytime; a guided tour appears on first launch (can be disabled in Settings).
 
@@ -207,13 +226,18 @@ The default layout looks like this (all panels can be freely rearranged):
 
 | Crate | Responsibility |
 | --- | --- |
-| `vofa-next-core` | Core types & config (transports, protocols, widgets, CAN, logic, diagnostics) |
-| `vofa-next-transport` | Transport layer (serial / TCP / UDP / Slcan / CandleLight / test data) + manager |
-| `vofa-next-protocol` | Protocol engines (JustFloat / FireWater / RawData / Slcan / CandleLight / LogicDecode) |
-| `vofa-next-buffer` | Ring buffer, multi-channel `DataBuffer`, raw-data collector, node-graph routing |
-| `vofa-next-nodes` | DAG compiler & evaluator (Math / Filter / SpectrumSink / FrameDecoder / Custom) |
-| `vofa-next-dsp` | Digital signal processing (FIR/IIR filters, FFT spectrum, window functions) |
-| `vofa-next-automotive` | Diagnostic engine (ISO-TP / UDS / OBD-II / J1939) bridging CAN backends |
+| `vofa_core` | Core types & config (transport / widget / pipeline configs, error types) |
+| `schema_types` / `schema_engine` | Protocol frame schema types & schema-driven protocol engine |
+| `can_types` / `logic_types` / `logic_decoder` / `diagnostic` | CAN / logic / diagnostics types & decoders |
+| `transport_core` / `transport_serial` / `transport_net` / `transport_can_bridge` | Transport layer (serial / TCP / UDP / Slcan / CandleLight / test data) |
+| `protocol_engine` / `protocol_float` / `protocol_can_bridge` | Protocol engines (JustFloat / FireWater / RawData / Slcan / CandleLight / LogicDecode) |
+| `buffer_ring` / `buffer_databuffer` / `buffer_raw` / `buffer_graph` | Ring buffer, multi-channel `DataBuffer`, raw-data collector, graph routing |
+| `node_kind` / `node_hir` / `node_plane` / `node_lower` / `node_eval` / `node_engine` / `node_frame_decoder` / `node_trigger` | DAG node definitions, compiler pipeline (HIR → plane projection → lowering → slot runtime) & facade, frame decoder, trigger matching |
+| `dsp_window` / `dsp_fft` / `dsp_filter` | Digital signal processing (window functions, FFT spectrum, FIR/IIR filters) |
+| `automotive_isotp` / `automotive_can` / `automotive_diag` | Diagnostic engine (ISO-TP / UDS / OBD-II / J1939) bridging CAN backends |
+| `pipeline_data_plane` / `pipeline_stream` / `pipeline_dispatcher` / `subscription` | Data plane: byte routing, chunked stream dispatch, subscription registry |
+| `app_state` / `notify_events` / `menu_shell` / `update_flow` | App state & tickers, frontend event contracts & notifications, menu, updater |
+| `cmd_*` (7 crates) | Tauri commands (buffer / can_load / can_transport / debug / graph / pipeline / rawdata) |
 
 ## Project Structure
 
@@ -227,7 +251,8 @@ vofa-next/
 │   │   ├── displays/              # Waveform / Gauge / LED / PieChart / Spectrum /
 │   │   │                          # Image / NumberDisplay / Model3D / TableView /
 │   │   │                          # CanView / CanSender / CanLoadView / LogicView /
-│   │   │                          # RawDataView / CommandSender / FrameDecoder / ...
+│   │   │                          # RawDataView / CommandSender / FrameDecoder /
+│   │   │                          # OperationHistory / ...
 │   │   ├── layout/                # ActivityBar / Sidebar / DockLayout /
 │   │   │                          # DockCardFrame / DataTabContent / NodeEditor /
 │   │   │                          # StatusBar / BufferUsageStats / CanLoadAlarm

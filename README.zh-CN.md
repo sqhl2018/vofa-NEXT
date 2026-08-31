@@ -51,6 +51,7 @@
 - [版本控制](#版本控制)
 - [开源协议](#开源协议)
 - [鸣谢](#鸣谢)
+- [打赏](#打赏)
 
 ## 项目简介
 
@@ -83,13 +84,21 @@ VOFA-NEXT 是一款面向嵌入式调试场景的桌面串口助手。前端基�
 ### 节点编辑器与数据流
 
 - 基于 **React Flow** —— 从侧边栏拖拽控件到画布并连接数据流。
-- 后端 **DAG 引擎**（`vofa-next-nodes`）将图编译为拓扑序，逐帧评估所有节点输出，含循环检测。
+- 后端 **DAG 引擎**（`node_engine`）将图编译为拓扑序，逐帧评估所有节点输出，含循环检测。
 - 节点类型：`ChannelSource`、`Input`、`Math`、`Filter`、`SpectrumSink`、`FrameDecoder`、`Custom`（JS）、`Sink`。
 - **算术节点**：加 / 减 / 乘 / 除 / 均值 / 最小 / 最大 / 绝对值 / 取反 / 平方 / 开方 / sin / cos / tan / log。
 - **滤波器节点**：低通 / 高通 / 带通 / 带阻（FIR 系数或 IIR biquad），跨帧状态持久化。
 - **SpectrumSink**：块运算 FFT，可选窗函数（Hann / Hamming / Blackman / Rect）与输出模式（Magnitude / Power / PSD / dB），由独立 30 FPS ticker 驱动。
 - **FrameDecoder**：基于块的字节流解析器（帧头 / 长度 / ID / 字段 / 位域 / 校验 / 帧尾），支持通过 `match_id` 多帧分派与校验和验证。
 - **Custom JS 节点**：用户 JavaScript 运行在沙箱 iframe 中，输出回传到后端图。
+
+### 操作历史 · 撤销 / 重做 / 回溯
+
+- **快照式撤销栈** —— 增删节点、连线、控件配置、标签页增删等画布操作自动记录为时间线；会话内有效，最多保留 200 步。
+- **快捷键** —— `Ctrl+Z` 撤销、`Ctrl+Y` 重做；拖动节点、滑块调节等连续手势自动合并为一条记录。
+- **操作历史面板** —— 时间线列表最新在上，行首徽章沿用画布节点的种类配色（连线显示双端点配色）；点击任意一条直接跳转到那个时刻（快照式回滚），当前条目高亮，其上方灰显的「已撤销 · 可重做」分区点击即可重做。
+- **分支语义** —— 回退后继续编辑会自动丢弃 redo 分支；导入备份 / 应用模板后以新基线重置历史。
+- **面板入口** —— 数据卡片标题栏「＋」菜单中的「打开操作历史」，或新手引导中实际演练。
 
 ### 显示与控件
 
@@ -129,6 +138,13 @@ VOFA-NEXT 是一款面向嵌入式调试场景的桌面串口助手。前端基�
 - 透明窗口与亚克力 / 毛玻璃效果（macOS）。
 - 通过 `tauri-plugin-notification` 的原生系统通知。
 - 通过 `tauri-plugin-log` 的结构化日志（stdout / 日志目录 / webview）。
+
+### AI 助手
+
+- **流式 AI 对话** —— 可停靠对话面板(默认右侧,拖动标题栏可重新停靠到左侧 / 底部或浮动为小窗,布局持久化),支持 **Markdown 渲染**(表格、代码高亮、代码块 / 消息一键复制)与多会话管理(新建 / 重命名 / 删除,历史由 Rust 后端持久化,重启不丢)。
+- **26+ LLM 服务商** —— OpenAI / Anthropic / Gemini / DeepSeek / 通义 / Kimi / GLM / Ollama / OpenRouter 等,并以 [**OrcaRouter**](https://orcarouter.ai) 为重点推荐的默认适配器(一把 Key 调用全厂商模型,[通过推广链接注册获取 API Key](https://www.orcarouter.ai/ref/ref_1f7582998bdadbe7e0f3)即可支持本项目)。
+- **工具调用(MCP 客户端)** —— 对话中模型可调用外部 MCP server(stdio / HTTP)提供的工具,单次调用全程可追踪。
+- **MCP 服务(入站)** —— 本应用把自身能力(串口发送、波形读取、节点图编辑…)暴露为 MCP 工具(`http://127.0.0.1:{port}/mcp`),Claude Desktop 等外部 AI 客户端可直接操控 VOFA-NEXT。
 
 ## 使用指引
 
@@ -174,6 +190,7 @@ VOFA-NEXT 是一款面向嵌入式调试场景的桌面串口助手。前端基�
 ### 常用操作
 
 - **设置**：`Ctrl+,` / `Cmd+,` 或活动栏齿轮图标；支持全应用配置导出 / 导入（备份为单个 JSON 文件）。
+- **撤销 / 回溯**：`Ctrl+Z` 撤销、`Ctrl+Y` 重做；「操作历史」面板中点击任意一条记录可跳回该时刻（详见核心特性）。
 - **刷新端口**：状态栏刷新按钮或右键菜单。
 - **帮助与引导**：活动栏底部帮助图标可随时打开帮助中心；首次启动自动弹出引导向导（可在设置中关闭）。
 
@@ -207,13 +224,18 @@ VOFA-NEXT 是一款面向嵌入式调试场景的桌面串口助手。前端基�
 
 | Crate | 职责 |
 | --- | --- |
-| `vofa-next-core` | 核心类型与配置（传输 / 协议 / 控件 / CAN / 逻辑 / 诊断） |
-| `vofa-next-transport` | 传输层（串口 / TCP / UDP / Slcan / CandleLight / 测试数据）+ 管理器 |
-| `vofa-next-protocol` | 协议引擎（JustFloat / FireWater / RawData / Slcan / CandleLight / LogicDecode） |
-| `vofa-next-buffer` | 环形缓冲区、多通道 `DataBuffer`、原始数据收集器、节点图路由 |
-| `vofa-next-nodes` | DAG 编译器与评估器（Math / Filter / SpectrumSink / FrameDecoder / Custom） |
-| `vofa-next-dsp` | 数字信号处理（FIR/IIR 滤波器、FFT 频谱、窗函数） |
-| `vofa-next-automotive` | 诊断引擎（ISO-TP / UDS / OBD-II / J1939），桥接 CAN 后端 |
+| `vofa_core` | 核心类型与配置（传输 / 控件 / 流水线配置、错误类型） |
+| `schema_types` / `schema_engine` | 协议帧 schema 类型与 schema 驱动的协议引擎 |
+| `can_types` / `logic_types` / `logic_decoder` / `diagnostic` | CAN / 逻辑 / 诊断类型与解码器 |
+| `transport_core` / `transport_serial` / `transport_net` / `transport_can_bridge` | 传输层（串口 / TCP / UDP / Slcan / CandleLight / 测试数据） |
+| `protocol_engine` / `protocol_float` / `protocol_can_bridge` | 协议引擎（JustFloat / FireWater / RawData / Slcan / CandleLight / LogicDecode） |
+| `buffer_ring` / `buffer_databuffer` / `buffer_raw` / `buffer_graph` | 环形缓冲区、多通道 `DataBuffer`、原始数据收集器、图路由 |
+| `node_kind` / `node_hir` / `node_plane` / `node_lower` / `node_eval` / `node_engine` / `node_frame_decoder` / `node_trigger` | DAG 节点定义、编译流水线（HIR → 平面投影 → lowering → 槽位运行时）与门面、帧解码器、触发器匹配 |
+| `dsp_window` / `dsp_fft` / `dsp_filter` | 数字信号处理（窗函数、FFT 频谱、FIR/IIR 滤波器） |
+| `automotive_isotp` / `automotive_can` / `automotive_diag` | 诊断引擎（ISO-TP / UDS / OBD-II / J1939），桥接 CAN 后端 |
+| `pipeline_data_plane` / `pipeline_stream` / `pipeline_dispatcher` / `subscription` | 数据平面：字节路由、分片流分发、订阅注册表 |
+| `app_state` / `notify_events` / `menu_shell` / `update_flow` | 应用状态与 ticker、前端事件契约与通知、菜单、更新器 |
+| `cmd_*`（7 个 crate） | Tauri 命令（buffer / can_load / can_transport / debug / graph / pipeline / rawdata） |
 
 ## 目录结构
 
@@ -227,7 +249,7 @@ vofa-next/
 │   │   ├── displays/              # 波形 / 仪表 / LED / 饼图 / 频谱 /
 │   │   │                          # 图像 / 数字显示 / 3D 模型 / 表格 /
 │   │   │                          # CAN 视图 / CAN 发送 / CAN 负载 / 逻辑视图 /
-│   │   │                          # 原始数据 / 命令发送 / 帧解码 / ...
+│   │   │                          # 原始数据 / 命令发送 / 帧解码 / 操作历史 / ...
 │   │   ├── layout/                # ActivityBar / Sidebar / DockLayout /
 │   │   │                          # DockCardFrame / DataTabContent / NodeEditor /
 │   │   │                          # StatusBar / BufferUsageStats / CanLoadAlarm
@@ -404,3 +426,8 @@ cd src-tauri && cargo test
 [issues-url]: https://github.com/horldsence/vofa-next/issues
 [license-shield]: https://img.shields.io/github/license/horldsence/vofa-next.svg?style=flat-square
 [license-url]: https://github.com/horldsence/vofa-next/blob/master/LICENSE
+
+## 打赏
+
+？！赏赏！？
+**爱发电**: [@Horldsence](https://ifdian.net/a/Horldsence)

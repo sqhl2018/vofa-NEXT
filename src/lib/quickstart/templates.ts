@@ -9,8 +9,10 @@
 import { type Node, type Edge } from '@xyflow/react';
 import { createWidget } from '../utils/createWidget';
 import { ALL_BACKUP_SECTIONS, type AppSnapshot } from '../tauri/appExport';
+import { schemaFromProtocolConfig } from '../utils/protocolSchema';
+import { rawDataPortId } from '../utils/nodeDef';
 import type { DockNode, DockCard } from '../../store/dockStore';
-import type { WidgetConfig, DataTab, ControlTab, TransportConfig, ProtocolConfig } from '../../types';
+import type { WidgetConfig, DataTab, ControlTab, TransportConfig, ProtocolConfig, ProtocolSchema } from '../../types';
 
 const TAB = 'default';
 /// 模板内全局节点 id (应用时由 applySnapshot/mergeTemplate 处理)
@@ -60,12 +62,21 @@ function transportNode(config: TransportConfig): Node {
   };
 }
 
-function protocolNode(config: ProtocolConfig, channels = 4): Node {
+/// 全局 Protocol 节点 — schema 模型: 预设经 schemaFromProtocolConfig 生成,
+/// 自定义模板可经 schema 参数传 preset='custom' 的帧定义
+function protocolNode(config: ProtocolConfig, channels = 4, schema?: ProtocolSchema): Node {
   return {
     id: PROTOCOL_ID,
     type: 'protocol',
     position: { x: 260, y: 40 },
-    data: { global: true, config, convertTo: null, channels, label: config.kind },
+    data: {
+      global: true,
+      config,
+      convertTo: null,
+      channels,
+      schema: schema ?? schemaFromProtocolConfig(config),
+      label: schema?.preset === 'custom' ? 'Custom' : config.kind,
+    },
   };
 }
 
@@ -124,6 +135,10 @@ function buildDock(
   return { dockRoot: root, dockCards: cards };
 }
 
+/// 模板默认聚焦的数据 Tab — 应用模板后首先看向「编译结果」,核对连线质量
+/// (compile-errors / compile-results 是 appStore 初始 dataTabs 里固定存在的两个 Tab)
+const TEMPLATE_DEFAULT_ACTIVE_DATA_TAB = 'compile-results-fixed';
+
 /// 组装快照
 function buildSnapshot(opts: {
   name: string;
@@ -132,8 +147,9 @@ function buildSnapshot(opts: {
   widgetNodes: Node[];
   edges: Edge[];
   extraDataTabs?: DataTab[];
-  activeDataTabId?: string;
   sourceChannels?: number;
+  /// 自定义协议 schema (preset='custom'); 缺省由 protocol 配置工厂生成预设 schema
+  protocolSchema?: ProtocolSchema;
 }): AppSnapshot {
   const widgets = opts.widgetNodes.map((n) => n.data.widget as WidgetConfig);
   const controlTabs: ControlTab[] = [
@@ -146,8 +162,7 @@ function buildSnapshot(opts: {
   }
   const extraTabs = opts.extraDataTabs ?? [];
   const dataTabs: DataTab[] = [WAVEFORM_FIXED, ...derivedTabs, ...extraTabs];
-  const activeDataTabId =
-    opts.activeDataTabId ?? derivedTabs[0]?.id ?? extraTabs[0]?.id ?? 'waveform-fixed';
+  const activeDataTabId = TEMPLATE_DEFAULT_ACTIVE_DATA_TAB;
   const { dockRoot, dockCards } = buildDock(
     [TAB],
     dataTabs.map((t) => t.id),
@@ -166,7 +181,7 @@ function buildSnapshot(opts: {
     activeControlTabId: TAB,
     rfNodes: [
       transportNode(opts.transport),
-      protocolNode(opts.protocol, opts.sourceChannels ?? 4),
+      protocolNode(opts.protocol, opts.sourceChannels ?? 4, opts.protocolSchema),
       ...opts.widgetNodes,
     ],
     rfEdges: [
@@ -240,7 +255,6 @@ function filterTemplate(): AppSnapshot {
       edge('e3', PROTOCOL_ID, 'ch0', 'wf-filter', 'CH0'),
       edge('e4', 'f-lp', 'result', 'wf-filter', 'CH1'),
     ],
-    activeDataTabId: 'wf-filter',
   });
 }
 
@@ -255,7 +269,6 @@ function canTemplate(): AppSnapshot {
     widgetNodes: [],
     edges: [],
     extraDataTabs: [{ id: 'can-main', type: 'can', name: 'CAN', closable: true }],
-    activeDataTabId: 'can-main',
   });
 }
 
@@ -290,7 +303,6 @@ function serialTemplate(): AppSnapshot {
       edge('e3', PROTOCOL_ID, 'ch2', 'nd-ch2', 'value'),
       edge('e4', PROTOCOL_ID, 'ch3', 'nd-ch3', 'value'),
     ],
-    activeDataTabId: 'waveform-fixed',
   });
 }
 
@@ -318,7 +330,6 @@ function demoTemplate(): AppSnapshot {
       edge('e4', PROTOCOL_ID, 'ch1', 'm-sin', 'in0'),
       edge('e5', 'm-sin', 'result', 'g-sin', 'value'),
     ],
-    activeDataTabId: 'wf',
   });
 }
 
@@ -350,7 +361,72 @@ function fftTemplate(): AppSnapshot {
       edge('e4', PROTOCOL_ID, 'ch0', 'wf-ifft', 'CH0'),
       edge('e5', 'ifft-main', 'out0', 'wf-ifft', 'CH1'),
     ],
-    activeDataTabId: 'spec-main',
+  });
+}
+
+/// 自定义协议演示: custom 块协议 (命名端口) + 多帧 CommandSender
+/// 帧布局与 TestData 的 JustFloat 线缆格式一致 (2×float32LE + 帧尾),
+/// 因此连接 TestData 即可看到 speed/temp 命名通道数据
+function customProtocolTemplate(): AppSnapshot {
+  const customSchema: ProtocolSchema = {
+    preset: 'custom',
+    decode: [
+      { id: 'cp-f0', type: 'field', fieldType: 'float32LE', portName: 'speed' },
+      { id: 'cp-f1', type: 'field', fieldType: 'float32LE', portName: 'temp' },
+      { id: 'cp-tail', type: 'tail', hex: '00 00 80 7F' },
+    ],
+  };
+  const cmd = widget('Command', 'cmd-main', 'Command', {
+    frames: [
+      {
+        id: 'cmd-main-frame-1',
+        label: 'Ping',
+        blocks: [
+          { id: 'b1', type: 'const_hex', hex: 'AA 01' },
+          { id: 'b2', type: 'checksum', checksum: 'sum8' },
+        ],
+        appendNewline: false,
+        sendMode: 'manual',
+        timerMs: 1000,
+      },
+      {
+        id: 'cmd-main-frame-2',
+        label: 'Set Speed',
+        blocks: [
+          { id: 'b3', type: 'const_hex', hex: 'BB' },
+          { id: 'b4', type: 'var_ref', portName: 'speed', fieldType: 'float32LE' },
+        ],
+        appendNewline: false,
+        sendMode: 'manual',
+        timerMs: 1000,
+      },
+    ],
+  });
+  const wf = widget('Waveform', 'wf-custom', 'Speed', { channels: 4, dynamicSeries: true });
+  const gTemp = widget('Gauge', 'g-temp', 'Temp');
+  const raw = widget('RawData', 'raw-custom', 'RawData');
+  return buildSnapshot({
+    name: 'Custom Protocol',
+    // config 保留 JustFloat(2ch): TestData 按 legacy 格式生成字节流, custom decode 负责解析
+    protocol: { kind: 'JustFloat', channels: 2 },
+    protocolSchema: customSchema,
+    sourceChannels: 2,
+    transport: { kind: 'TestData', params: { channels: 2, sample_rate: 1000, signal: 'Sine' } },
+    widgetNodes: [
+      wnode('wf-custom', wf, 560, 60),
+      wnode('g-temp', gTemp, 560, 260),
+      wnode('cmd-main', cmd, 260, 260),
+      wnode('raw-custom', raw, 820, 160),
+    ],
+    edges: [
+      // 命名端口 → 波形/仪表 (schema 派生端口 speed/temp)
+      edge('e1', PROTOCOL_ID, 'speed', 'wf-custom', 'CH0'),
+      edge('e2', PROTOCOL_ID, 'temp', 'g-temp', 'value'),
+      // 协议字节出口 → RawData (动态端口 src:<id>:out)
+      edge('e3', PROTOCOL_ID, 'out', 'raw-custom', rawDataPortId(PROTOCOL_ID, 'out')),
+      // 多帧发送器 → 设备写入口
+      edge('e4', 'cmd-main', 'loopbackOut', TRANSPORT_ID, 'tx'),
+    ],
   });
 }
 
@@ -360,6 +436,7 @@ export const QUICK_START_TEMPLATES: QuickStartTemplate[] = [
   { id: 'fft', nameKey: 'templateFft', descKey: 'templateFftDesc', build: fftTemplate },
   { id: 'can', nameKey: 'templateCan', descKey: 'templateCanDesc', build: canTemplate },
   { id: 'serial', nameKey: 'templateSerial', descKey: 'templateSerialDesc', build: serialTemplate },
+  { id: 'custom-protocol', nameKey: 'templateCustomProtocol', descKey: 'templateCustomProtocolDesc', build: customProtocolTemplate },
   { id: 'demo', nameKey: 'templateDemo', descKey: 'templateDemoDesc', build: demoTemplate },
 ];
 

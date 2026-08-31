@@ -15,6 +15,16 @@ export interface AppSettings {
     showOnboarding: boolean;
     showContextualTips: boolean;
     debug: boolean;
+    /** 启动时自动检查更新 */
+    autoCheckUpdate: boolean;
+    /** 更新通道 (null = 按当前版本推导: 含 '-' 视为预发布 → beta, 否则 stable) */
+    updateChannel: 'stable' | 'beta' | null;
+    /** 用户选择跳过的更新版本号 (内部字段, 不进设置 UI) */
+    skippedUpdateVersion: string | null;
+    /** 上次运行的应用版本号 (内部字段, 不进设置 UI; 用于版本更新后自动弹出一次操作指南) */
+    lastSeenVersion: string | null;
+    /** 用户选择不再显示启动时钥匙串授权提醒 (内部字段, 不进设置 UI) */
+    suppressKeychainPermissionReminder: boolean;
   };
   appearance: {
     theme: string;
@@ -48,6 +58,8 @@ export interface AppSettings {
     crosshairVisible: boolean;
     /// 鼠标悬停采样点标记可见性 (曲线上跟随鼠标的数据点圆点)
     hoverPointsVisible: boolean;
+    /// 交互时自动暂停: 缩放/拖动波形时自动停止实时刷新 (关闭后交互不打断刷新, 运行中也可拖动回看历史)
+    pauseOnInteract: boolean;
   };
   data: {
     waveformBufferPoints: number;
@@ -71,13 +83,37 @@ export interface AppSettings {
   };
   /// 数据管道性能调优 — 更新即推送后端 set_pipeline_config (后端不持久化, 启动时重放)
   performance: {
-    maxFeedWorkers: number;
-    feedParallelUnit: number;
-    minWorkerBytesKb: number;
-    coalesceMaxMsgs: number;
-    coalesceMaxBytesKb: number;
-    maxStreamShards: number;
-    parseChannelCap: number;
+    mode: 'auto';
+    maxWorkers: number;
+    memoryBudgetMb: number;
+    previewFpsLimit: number;
+    previewBandwidthMbPerSec: number;
+  };
+  /// AI 对话与 MCP — api_key 存系统钥匙串 (ai_keychain_*), 磁盘副本恒为空串;
+  /// 运行时随请求传给后端, 后端不持久化
+  ai: {
+    /** LLM 适配器标识 (见后端 ai_list_providers) */
+    adapter: string;
+    /** 自定义端点 (空 = provider 默认; openai_compatible 必填) */
+    baseUrl: string;
+    /** API key */
+    apiKey: string;
+    /** 模型名 */
+    model: string;
+    /** 采样温度 (null = provider 默认) */
+    temperature: number | null;
+    /** 最大生成 token (null = provider 默认) */
+    maxTokens: number | null;
+    /** 系统提示词 (空 = 不发送) */
+    systemPrompt: string;
+    /** 工具调用循环最大轮次 */
+    maxToolRounds: number;
+    /** 对话中是否启用内置原生工具 (软件自有能力 + 知识库) */
+    builtinToolsEnabled: boolean;
+    /** 对话中是否启用 MCP 工具 */
+    mcpToolsEnabled: boolean;
+    /** 本地 MCP server 端口 (127.0.0.1, 供外部 AI 客户端连接) */
+    mcpServerPort: number;
   };
 }
 
@@ -90,6 +126,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
     showOnboarding: true,
     showContextualTips: true,
     debug: false,
+    autoCheckUpdate: true,
+    updateChannel: null,
+    skippedUpdateVersion: null,
+    lastSeenVersion: null,
+    suppressKeychainPermissionReminder: false,
   },
   appearance: {
     theme: 'dark',
@@ -115,6 +156,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     cursorSnap: true,
     crosshairVisible: true,
     hoverPointsVisible: true,
+    pauseOnInteract: false,
   },
   data: {
     waveformBufferPoints: 100_000,
@@ -137,15 +179,32 @@ export const DEFAULT_SETTINGS: AppSettings = {
     showOnError: true,
   },
   performance: {
-    maxFeedWorkers: 4,
-    feedParallelUnit: 8,
-    minWorkerBytesKb: 32,
-    coalesceMaxMsgs: 64,
-    coalesceMaxBytesKb: 256,
-    maxStreamShards: 4,
-    parseChannelCap: 256,
+    mode: 'auto',
+    maxWorkers: 8,
+    memoryBudgetMb: 256,
+    previewFpsLimit: 60,
+    previewBandwidthMbPerSec: 8,
+  },
+  ai: {
+    adapter: 'orcarouter',
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    temperature: null,
+    maxTokens: null,
+    systemPrompt: '',
+    maxToolRounds: 10,
+    builtinToolsEnabled: true,
+    mcpToolsEnabled: true,
+    mcpServerPort: 8765,
   },
 };
+
+/// OrcaRouter 推广链接 (合作伙伴中心; 应用内"获取 API Key"与 README 共用)
+export const ORCAROUTER_REFERRAL_URL = 'https://www.orcarouter.ai/ref/ref_1f7582998bdadbe7e0f3';
+
+/// OrcaRouter 免费模型页面 (获取 API Key 即可访问, 设置 → AI 提示条内展示)
+export const ORCAROUTER_OFFERS_URL = 'https://www.orcarouter.ai/zh-CN/offers';
 
 /// 设置分类元数据 — 用于 SettingsModal 渲染左侧导航
 export interface SettingCategoryMeta {
@@ -161,6 +220,7 @@ export const SETTING_CATEGORIES: SettingCategoryMeta[] = [
   { key: 'serial', icon: 'Usb' },
   { key: 'notifications', icon: 'Bell' },
   { key: 'performance', icon: 'Gauge' },
+  { key: 'ai', icon: 'Sparkles' },
 ];
 
 /// 浅合并: 用任意子路径更新设置 (path 例如 'appearance.uiFontSize')

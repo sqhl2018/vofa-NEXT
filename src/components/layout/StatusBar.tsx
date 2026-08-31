@@ -2,13 +2,36 @@ import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useAppStore } from '../../store/appStore';
 import { t } from '../../i18n';
 import { useContextMenu } from '../../lib/hooks/useContextMenu';
-import { RefreshCw, Settings, Info } from 'lucide-react';
+import { RefreshCw, Settings, Info, Sparkles } from 'lucide-react';
 import clsx from 'clsx';
 import { BufferUsageStats } from './BufferUsageStats';
 import { CanLoadAlarm } from './CanLoadAlarm';
 import { PipelineDropAlarm } from './PipelineDropAlarm';
+import { UpdateIndicator } from './UpdateIndicator';
 import { useSettingsStore } from '../../store/settingsStore';
 import { usePrimaryProtocolConfig, usePrimaryTransportConfig } from '../../lib/hooks/usePrimaryNodes';
+import CompileStatusIndicator from './CompileStatusIndicator';
+import { useLayoutStore } from '../../store/layoutStore';
+
+/// AI 对话面板开关 — 状态栏右侧常驻入口 (面板可见性持久化, 会话在后端不丢失)
+function AiPanelToggle() {
+  const lang = useAppStore((s) => s.lang);
+  const visible = useLayoutStore((s) => s.aiPanelVisible);
+  const setAiPanelVisible = useLayoutStore((s) => s.setAiPanelVisible);
+  return (
+    <button
+      className={`w-6 h-6 flex items-center justify-center rounded transition-colors duration-150 shrink-0 ${
+        visible
+          ? 'text-accent bg-accent/10'
+          : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+      }`}
+      title={t(lang, 'aiChat')}
+      onClick={() => setAiPanelVisible(!visible)}
+    >
+      <Sparkles size={12} />
+    </button>
+  );
+}
 
 /// 底部状态栏 — 显示连接状态、统计数据
 ///
@@ -53,18 +76,27 @@ export const StatusBar = memo(function StatusBar() {
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
+    // rAF 延迟 setState: 避免 RO 回调内同步改布局导致的 ResizeObserver loop 告警
+    let raf: number | null = null;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0].contentRect.width;
-      const grew = w > lastWidth.current;
-      lastWidth.current = w;
-      setTier((t) => {
-        if (grew) return Math.max(0, t - 1);
-        if (el.scrollWidth > el.clientWidth + 1) return Math.min(TIER_MAX, t + 1);
-        return t;
+      if (raf !== null) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        raf = null;
+        const grew = w > lastWidth.current;
+        lastWidth.current = w;
+        setTier((t) => {
+          if (grew) return Math.max(0, t - 1);
+          if (el.scrollWidth > el.clientWidth + 1) return Math.min(TIER_MAX, t + 1);
+          return t;
+        });
       });
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (raf !== null) cancelAnimationFrame(raf);
+    };
   }, []);
 
   // 溢出校正: 每次渲染后(绘制前)检测实际溢出, 逐级收缩直到放下或到达 TIER_MAX.
@@ -133,9 +165,9 @@ export const StatusBar = memo(function StatusBar() {
   }[connectionState];
 
   return (
-    <div ref={rootRef} className="h-[24px] bg-bg-statusbar text-text-secondary flex items-center px-2 text-xs gap-3 flex-shrink-0 overflow-hidden" onContextMenu={onContextMenu}>
+    <div ref={rootRef} className="h-[24px] bg-bg-statusbar text-text-secondary flex items-center px-2 text-xs gap-3 shrink-0 overflow-hidden" onContextMenu={onContextMenu}>
       <div className="flex items-center gap-1.5 h-full">
-        <span className={clsx("w-2.5 h-2.5 rounded-full inline-block flex-shrink-0", dotColorClass)} />
+        <span className={clsx("w-2.5 h-2.5 rounded-full inline-block shrink-0", dotColorClass)} />
         <span className="whitespace-nowrap">{stateLabel[connectionState]}</span>
       </div>
       {tier < 2 && (
@@ -184,18 +216,26 @@ export const StatusBar = memo(function StatusBar() {
           </div>
         </>
       )}
-      <div className="w-px h-3 bg-border-subtle mx-1 flex-shrink-0" />
+      <div className="flex items-center gap-1.5 h-full">
+        <CompileStatusIndicator
+          compact={tier >= 2}
+          onClickError={() => useAppStore.getState().addCompileErrorsTab()}
+        />
+      </div>
+      <div className="w-px h-3 bg-border-subtle mx-1 shrink-0" />
       <CanLoadAlarm />
       <PipelineDropAlarm />
+      <UpdateIndicator />
       {tier < 3 && <BufferUsageStats compact={tier >= 2} />}
-      <div className="w-px h-3 bg-border-subtle mx-1 flex-shrink-0" />
+      <div className="w-px h-3 bg-border-subtle mx-1 shrink-0" />
       <button
-        className="w-6 h-6 flex items-center justify-center rounded text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active transition-colors duration-150 flex-shrink-0"
+        className="w-6 h-6 flex items-center justify-center rounded text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active transition-colors duration-150 shrink-0"
         title={t(lang, 'refresh')}
         onClick={() => refreshPorts()}
       >
         <RefreshCw size={12} />
       </button>
+      <AiPanelToggle />
     </div>
   );
 });

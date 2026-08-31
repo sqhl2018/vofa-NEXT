@@ -2,6 +2,7 @@ import { memo } from 'react';
 import {
   Cable,
   LayoutGrid,
+  Layers,
   Settings,
   Info,
   HelpCircle,
@@ -71,6 +72,7 @@ export const ActivityBar = memo(function ActivityBar({ activeView, onSelect }: A
   const items: { view: SidebarView; icon: React.ReactNode; key: Parameters<typeof t>[1] }[] = [
     { view: 'quickstart', icon: <Rocket size={22} />, key: 'quickStart' },
     { view: 'widgets', icon: <LayoutGrid size={22} />, key: 'widgetPalette' },
+    { view: 'panels', icon: <Layers size={22} />, key: 'menuPanel' },
   ];
 
   return (
@@ -86,7 +88,7 @@ export const ActivityBar = memo(function ActivityBar({ activeView, onSelect }: A
             "w-10 h-10 mx-1 rounded-md flex items-center justify-center cursor-pointer transition-colors duration-150 active:bg-accent-active",
             activeView === item.view
               ? "text-text-bright bg-bg-active"
-              : "text-text-inverse/60 hover:text-text-inverse hover:bg-bg-hover"
+              : "text-text-secondary hover:text-text-primary hover:bg-bg-hover"
           )}
           title={t(lang, item.key)}
           onClick={() => transitionStore(() => onSelect(item.view))}
@@ -97,21 +99,21 @@ export const ActivityBar = memo(function ActivityBar({ activeView, onSelect }: A
       <div className="flex-1" />
       <div
         data-tour="help"
-        className="w-10 h-10 mx-1 rounded-md flex items-center justify-center cursor-pointer text-text-inverse/60 hover:text-text-inverse hover:bg-bg-hover active:bg-accent-active transition-colors duration-150"
+        className="w-10 h-10 mx-1 rounded-md flex items-center justify-center cursor-pointer text-text-secondary hover:text-text-primary hover:bg-bg-hover active:bg-accent-active transition-colors duration-150"
         title={t(lang, 'helpCenterOpen')}
         onClick={openHelp}
       >
         <HelpCircle size={22} />
       </div>
       <div
-        className="w-10 h-10 mx-1 rounded-md flex items-center justify-center cursor-pointer text-text-inverse/60 hover:text-text-inverse hover:bg-bg-hover active:bg-accent-active transition-colors duration-150"
+        className="w-10 h-10 mx-1 rounded-md flex items-center justify-center cursor-pointer text-text-secondary hover:text-text-primary hover:bg-bg-hover active:bg-accent-active transition-colors duration-150"
         title={t(lang, 'about')}
         onClick={openAbout}
       >
         <Info size={22} />
       </div>
       <div
-        className="w-10 h-10 mx-1 rounded-md flex items-center justify-center cursor-pointer text-text-inverse/60 hover:text-text-inverse hover:bg-bg-hover active:bg-accent-active transition-colors duration-150"
+        className="w-10 h-10 mx-1 rounded-md flex items-center justify-center cursor-pointer text-text-secondary hover:text-text-primary hover:bg-bg-hover active:bg-accent-active transition-colors duration-150"
         title={t(lang, 'settings')}
         onClick={() => openSettings()}
       >

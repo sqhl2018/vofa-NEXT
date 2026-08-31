@@ -1,5 +1,5 @@
 import { memo, useState, useCallback } from 'react';
-import { Plus, X, Type, Trash2, Copy, Cpu, CircuitBoard } from 'lucide-react';
+import { Plus, X, Type, Trash2, Copy } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type AppStore } from '../../store/appStore';
 import { useDockStore } from '../../store/dockStore';
@@ -10,6 +10,7 @@ import { useSlidingPill, SlidingPill } from '../ui/SlidingPill';
 import { AnimatedSwitch } from '../ui/AnimatedSwitch';
 import { NodeEditor } from './NodeEditor';
 import { DataTabContent, DataTabIcon } from './DataTabContent';
+import { CompileDot } from './CompileStatusIndicator';
 import { useContextMenu, showContextMenu } from '../../lib/hooks/useContextMenu';
 import { transitionStore } from '../../lib/utils/transitionStore';
 import { dockDrag } from '../../lib/dockDrag';
@@ -44,9 +45,9 @@ export const DockCardFrame = memo(function DockCardFrame({ cardId }: { cardId: s
 
   // 本卡片承载的 Tab 列表 — 按 cardId 窄化订阅 (useShallow 顶层数组逐元素比较):
   // 其他卡片 Tab 的名称/列表变化时, 本卡片的重渲染被抑制
-  const tabs: Array<{ id: string; name: string; type?: string; closable?: boolean }> = useAppStore(
+  const tabs: { id: string; name: string; type?: string; closable?: boolean }[] = useAppStore(
     useShallow(
-      ((s: AppStore): Array<{ id: string; name: string; type?: string; closable?: boolean }> =>
+      ((s: AppStore): { id: string; name: string; type?: string; closable?: boolean }[] =>
         kind === 'control'
           ? s.controlTabs.filter((tab) => cardTabIds.includes(tab.id))
           : s.dataTabs.filter((tab) => cardTabIds.includes(tab.id)))
@@ -54,8 +55,6 @@ export const DockCardFrame = memo(function DockCardFrame({ cardId }: { cardId: s
   );
   // 全局 Tab 数量/类型派生标量 — 窄化为布尔/数字, 仅在对应状态翻转时触发重渲染
   const canClose = useAppStore((s) => s.controlTabs.length > 1);
-  const hasCanTab = useAppStore((s) => s.dataTabs.some((tab) => tab.type === 'can'));
-  const hasLogicTab = useAppStore((s) => s.dataTabs.some((tab) => tab.type === 'logic'));
 
   // Tab 滑动指示器
   const { containerRef: tabBarRef, pill: tabPill } = useSlidingPill(activeTabId);
@@ -117,22 +116,7 @@ export const DockCardFrame = memo(function DockCardFrame({ cardId }: { cardId: s
   const tabBarContextMenu = useContextMenu(
     kind === 'control'
       ? [{ id: 'new-tab', label: t(lang, 'newTab'), icon: <Plus />, onClick: () => addControlTab() }]
-      : [
-          {
-            id: 'add-can-tab',
-            label: t(lang, 'addCanTab'),
-            icon: <Cpu size={14} />,
-            disabled: hasCanTab,
-            onClick: () => useAppStore.getState().addCanTab(),
-          },
-          {
-            id: 'add-logic-tab',
-            label: t(lang, 'addLogicTab'),
-            icon: <CircuitBoard size={14} />,
-            disabled: hasLogicTab,
-            onClick: () => useAppStore.getState().addLogicTab(),
-          },
-        ]
+      : []
   );
 
   const makeTabContextMenu = useCallback(
@@ -190,7 +174,7 @@ export const DockCardFrame = memo(function DockCardFrame({ cardId }: { cardId: s
       <div
         ref={tabBarRef}
         data-tour={kind === 'data' ? 'data-tabs' : undefined}
-        className={`relative flex items-center gap-1 bg-bg-panel-header border-b border-border-subtle flex-shrink-0 px-2 py-1 overflow-x-auto transition duration-150 select-none ${
+        className={`relative flex items-center gap-1 bg-bg-panel-header border-b border-border-subtle shrink-0 px-2 py-1 overflow-x-auto transition duration-150 select-none ${
           mergeHover
             ? 'shadow-[inset_0_0_0_1.5px_var(--color-accent)] bg-accent/10'
             : mergeActive
@@ -209,7 +193,7 @@ export const DockCardFrame = memo(function DockCardFrame({ cardId }: { cardId: s
           <div
             key={tab.id}
             data-tab-key={tab.id}
-            className={`relative px-2.5 h-7 text-xs cursor-pointer rounded-sm flex items-center gap-1.5 flex-shrink-0 transition-colors duration-150 select-none ${
+            className={`relative px-2.5 h-7 text-xs cursor-pointer rounded-sm flex items-center gap-1.5 shrink-0 min-w-0 max-w-[180px] overflow-hidden transition-colors duration-150 select-none ${
               tab.id === activeTabId
                 ? 'text-text-bright'
                 : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active'
@@ -243,11 +227,14 @@ export const DockCardFrame = memo(function DockCardFrame({ cardId }: { cardId: s
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span>{tab.name}</span>
+              <>
+                {kind === 'control' && <CompileDot tabId={tab.id} />}
+                <span className="truncate">{tab.name}</span>
+              </>
             )}
             {closable(tab.id) && (
               <button
-                className="w-4 h-4 flex items-center justify-center rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active transition-colors cursor-pointer ml-0.5 p-0 flex-shrink-0"
+                className="w-4 h-4 flex items-center justify-center rounded-sm text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active transition-colors cursor-pointer ml-0.5 p-0 shrink-0"
                 onClick={(e) => {
                   e.stopPropagation();
                   if (kind === 'control') removeControlTab(tab.id);
@@ -262,31 +249,14 @@ export const DockCardFrame = memo(function DockCardFrame({ cardId }: { cardId: s
             )}
           </div>
         ))}
-        {kind === 'control' ? (
+        {kind === 'control' && (
           <button
-            className="w-6 h-7 flex items-center justify-center rounded text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active transition-colors cursor-pointer ml-1 flex-shrink-0"
+            className="w-6 h-7 flex items-center justify-center rounded text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active transition-colors cursor-pointer ml-1 shrink-0"
             onClick={() => addControlTab()}
             title={t(lang, 'newTab')}
           >
             <Plus size={14} />
           </button>
-        ) : (
-          <>
-            <button
-              className="w-7 h-7 text-xs cursor-pointer rounded-md flex items-center justify-center flex-shrink-0 text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active transition-colors"
-              onClick={() => useAppStore.getState().addCanTab()}
-              title={t(lang, 'addCanTab')}
-            >
-              <Cpu size={12} />
-            </button>
-            <button
-              className="w-7 h-7 text-xs cursor-pointer rounded-md flex items-center justify-center flex-shrink-0 text-text-secondary hover:bg-bg-hover hover:text-text-primary active:bg-accent-active transition-colors"
-              onClick={() => useAppStore.getState().addLogicTab()}
-              title={t(lang, 'addLogicTab')}
-            >
-              <CircuitBoard size={12} />
-            </button>
-          </>
         )}
       </div>
 

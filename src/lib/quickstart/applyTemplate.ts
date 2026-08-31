@@ -11,6 +11,7 @@ import { useAppStore } from '../../store/appStore';
 import { isGlobalNode } from '../../store/appStoreHelpers';
 import { useDockStore } from '../../store/dockStore';
 import { applySnapshot, migrateSnapshotToV3, type AppSnapshot } from '../tauri/appExport';
+import { rebaseHistory } from '../../store/historyStore';
 import { notify, formatError } from '../tauri/notifications';
 import { t } from '../../i18n';
 import type { WidgetConfig, DataTab } from '../../types';
@@ -19,7 +20,7 @@ export type TemplateApplyMode = 'replace' | 'merge';
 
 /// 重映射 RawData 动态端口 id (`src:<sourceId>:<handle>`) 中的 sourceId
 function remapRawDataHandle(handle: string | undefined | null, idMap: Map<string, string>): string | undefined | null {
-  if (!handle || !handle.startsWith('src:')) return handle;
+  if (!handle?.startsWith('src:')) return handle;
   const m = /^src:([^:]+):(.*)$/.exec(handle);
   if (!m) return handle;
   const newSource = idMap.get(m[1]) ?? m[1];
@@ -133,6 +134,8 @@ export async function applyTemplate(
       });
     } else {
       mergeTemplate(snap);
+      // 合并模式不走 applySnapshot — 撤销历史同样重置为新基线
+      rebaseHistory('opApplyTemplate');
     }
 
     const isConnected = Object.values(useAppStore.getState().connectionStates).some(

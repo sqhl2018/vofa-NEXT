@@ -1,14 +1,16 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from 'react';
+import { Unplug } from 'lucide-react';
 import { useAppStore } from '../../../store/appStore';
-import { rawDataBuffer, RawDataBuffer } from '../../../lib/buffers/dataBuffer';
+import { RawDataBuffer } from '../../../lib/buffers/dataBuffer';
 import { acquireRawDataNode, releaseRawDataNode } from '../../../lib/buffers/rawDataNodeBuffer';
-import { FilteredRawDataBuffer, parseSearchPattern } from '../../../lib/buffers/filteredRawDataBuffer';
+import { acquireRawDataTransport, releaseRawDataTransport } from '../../../lib/buffers/rawDataTransportBuffer';
+import { classifyRawDataChannel, resolveRawDataChannelKey } from '../../../lib/utils/rawDataChannel';
 import type { RawDataFilterOptions } from '../../../lib/buffers/rawDataSubscription';
-import { perfEvent } from '../../../lib/utils/perfLog';
 import { useSelection } from '../../../lib/hooks/useSelection';
 import { writeTextToClipboard } from '../../../lib/utils/clipboard';
 import { rawDataPortId } from '../../../lib/utils/nodeDef';
-import '../../../i18n';
+import { traceTransportSource } from '../../../store/appStoreHelpers';
+import { t } from '../../../i18n';
 import type { RawDataGrouping, RawDataRepr, DirectionFilter, HexColorMode, AppendMode, SendPanelMode } from './rawDataViewHelpers';
 import { byteToHex, byteToAscii, formatTime } from './rawDataViewHelpers';
 import { DroppedInfoPopover } from '../../common/DroppedInfoPopover';
@@ -18,41 +20,22 @@ import { RawDataViewNumericContent } from './RawDataViewNumericContent';
 import { RawDataViewSendPanel } from './RawDataViewSendPanel';
 import { RawDataViewSettings } from './RawDataViewSettings';
 import { getRawDataViewPrefs } from '../../../lib/buffers/rawDataViewStore';
+import { getPortSampleStore } from '../../../lib/data/dataClient';
 
 /// 原始数据显示 — Grid/Line × HEX/ASCII 四视图, 支持虚拟滚动、文本选中/行选中复制、时间戳、发送
-/// widgetId 存在时展示通道选择器: FrameDecoder 的 raw 口 = 该节点独立整帧字节流,
-/// field 口及其他数值源 = 数值流 (graphOutputs)
+/// 纯端口制: 每张卡片独立的输入选择 (存 RawDataConfig.selectedInput), 选择器只列该卡片
+/// 已连接的端口 (Transport.rx / Protocol.out / FrameDecoder.raw / 数值口); 无连线时空态引导。
+/// FrameDecoder 的 raw 口 = 该节点独立整帧字节流, field 口及其他数值源 = 数值流 (graphOutputs)
 export function RawDataView({ widgetId }: { widgetId?: string }) {
   const lang = useAppStore((s) => s.lang);
   const clearData = useAppStore((s) => s.clearData);
   const sendText = useAppStore((s) => s.sendText);
   const rfEdges = useAppStore((s) => s.rfEdges);
   const widgets = useAppStore((s) => s.widgets);
-  const graphOutputs = useAppStore((s) => s.graphOutputs);
-  const graphOutputsTick = useAppStore((s) => s.graphOutputsTick);
-  // 目标 Transport (字节源 = 发送目标; null = 自动取第一个)
+  const updateWidget = useAppStore((s) => s.updateWidget);
   // 注意: 选择器必须返回稳定引用 (filter 每次产新数组会触发 useSyncExternalStore 死循环),
   // 故订阅 rfNodes 原始数组, 用 useMemo 派生
   const rfNodes = useAppStore((s) => s.rfNodes);
-  const transportNodes = useMemo(
-    () => rfNodes.filter((n) => n.type === 'transport' && n.data?.global === true),
-    [rfNodes]
-  );
-  const rawDataSourceNodeId = useAppStore((s) => s.rawDataSourceNodeId);
-  const setRawDataSourceNodeId = useAppStore((s) => s.setRawDataSourceNodeId);
-  const transportOptions = useMemo(
-    () =>
-      transportNodes.map((n) => {
-        const cfg = (n.data as { config?: { kind?: string } }).config;
-        return { id: n.id, label: `${cfg?.kind ?? '?'} (${n.id.slice(-4)})` };
-      }),
-    [transportNodes]
-  );
-  const effectiveTransportId =
-    rawDataSourceNodeId && transportOptions.some((o) => o.id === rawDataSourceNodeId)
-      ? rawDataSourceNodeId
-      : (transportOptions[0]?.id ?? null);
-
   // 持久化 key: widgetId 存在时按控件独立保存, 否则共享 'global' 配置
   const persistKey = widgetId ?? 'global';
 
@@ -60,7 +43,6 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
   const [repr, setRepr] = useState<RawDataRepr>(() => getRawDataViewPrefs(persistKey).repr);
   const [directionFilter, setDirectionFilter] = useState<DirectionFilter>(() => getRawDataViewPrefs(persistKey).directionFilter);
   const [searchTerm, setSearchTerm] = useState('');
-  const [channel, setChannel] = useState<string>('global');
   const [autoScroll, setAutoScroll] = useState(() => getRawDataViewPrefs(persistKey).autoScroll);
   const [showTimestamp, setShowTimestamp] = useState(() => getRawDataViewPrefs(persistKey).showTimestamp);
   const [showOffset, setShowOffset] = useState(() => getRawDataViewPrefs(persistKey).showOffset);
@@ -73,20 +55,57 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
   const [copyFeedback, setCopyFeedback] = useState(false);
 
   // 通道选择: 该 widget 的入边 (source, sourceHandle) 组合 (去重)
+  // 字节平面源 (Transport/Protocol 全局节点) 附带节点标签, 避免多接口时选项同为 "rx"/"out" 无法区分
   const channelOptions = useMemo(() => {
     if (!widgetId) return [];
+    const globalLabel = (id: string): string | null => {
+      const n = rfNodes.find((n) => n.id === id);
+      const cfg = (n?.data as { config?: { kind?: string } } | undefined)?.config;
+      if (n?.type === 'transport') return `${cfg?.kind ?? '?'} (${id.slice(-4)})`;
+      if (n?.type === 'protocol') return cfg?.kind ?? 'Protocol';
+      return null;
+    };
     const seen = new Set<string>();
-    const options: { key: string; sourceId: string; sourceHandle: string | undefined }[] = [];
+    const options: { key: string; sourceId: string; sourceHandle: string | undefined; label?: string }[] = [];
     for (const e of rfEdges) {
       if (e.target !== widgetId) continue;
       const sourceHandle = e.sourceHandle ?? undefined;
       const key = rawDataPortId(e.source, sourceHandle);
       if (seen.has(key)) continue;
       seen.add(key);
-      options.push({ key, sourceId: e.source, sourceHandle });
+      const g = globalLabel(e.source);
+      options.push({
+        key,
+        sourceId: e.source,
+        sourceHandle,
+        label: g ? `${g}·${sourceHandle ?? 'data'}` : undefined,
+      });
     }
     return options;
-  }, [widgetId, rfEdges]);
+  }, [widgetId, rfEdges, rfNodes]);
+
+  // 纯端口制通道选择 (单一事实源 = 控件配置 RawDataConfig.selectedInput):
+  // 配置选中且该连线仍存在 → 用它; 否则回退第一个已连接端口; 无连线 → '' (空态)。
+  // 切换选择经 onChannelChange 写回配置, 触发操作历史与图同步 (Sink 节点无参数变化, 重编译无害)
+  const ownWidget = useMemo(() => {
+    const w = widgets.find((w) => w.kind === 'RawData' && w.params.id === widgetId);
+    return w?.kind === 'RawData' ? w : undefined;
+  }, [widgets, widgetId]);
+  const channel = useMemo(
+    () => resolveRawDataChannelKey(ownWidget?.params.selectedInput, channelOptions) ?? '',
+    [channelOptions, ownWidget]
+  );
+
+  const onChannelChange = useCallback(
+    (key: string) => {
+      if (!ownWidget) return;
+      updateWidget(ownWidget.params.id, {
+        kind: 'RawData',
+        params: { ...ownWidget.params, selectedInput: key },
+      });
+    },
+    [ownWidget, updateWidget]
+  );
 
   const sourceLabel = useCallback(
     (id: string) => {
@@ -96,24 +115,44 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
     [widgets]
   );
 
-  const sourceIsFrameDecoder = useCallback(
-    (id: string) => widgets.some((w) => w.kind === 'FrameDecoder' && w.params.id === id),
-    [widgets]
-  );
-
   const selectedChannel = channelOptions.find((o) => o.key === channel);
-  const isDec =
-    !!selectedChannel &&
-    selectedChannel.sourceHandle === 'raw' &&
-    sourceIsFrameDecoder(selectedChannel.sourceId);
-  const isNum = !!selectedChannel && !isDec;
+  // 通道分类: FrameDecoder raw 口 = 节点旁路字节流; Transport/Protocol 源 = 接口原始字节流;
+  // 其余 = 数值流 (graphOutputs)
+  const channelInfo = useMemo(
+    () =>
+      selectedChannel
+        ? classifyRawDataChannel(selectedChannel, rfNodes, rfEdges, widgets)
+        : null,
+    [selectedChannel, rfNodes, rfEdges, widgets]
+  );
+  const isDec = channelInfo?.kind === 'decoder-node';
+  const isByteSrc = channelInfo?.kind === 'byte-source';
+  const isNum = !!selectedChannel && !isDec && !isByteSrc;
 
-  // 切换控件 / 通道消失时回退到 global
-  useEffect(() => setChannel('global'), [widgetId]);
-  useEffect(() => {
-    if (channel === 'global') return;
-    if (channelOptions.length === 0 || !channelOptions.some((o) => o.key === channel)) setChannel('global');
-  }, [channelOptions, channel]);
+  // 发送目标 = 选中通道沿连线溯源到的 Transport (字节源/数值口均可上溯);
+  // 溯源失败 (如自定义控件数值口) → null, 发送面板禁用
+  const sendTargetId = useMemo(() => {
+    if (!selectedChannel) return null;
+    return traceTransportSource(selectedChannel.sourceId, rfEdges, rfNodes);
+  }, [selectedChannel, rfEdges, rfNodes]);
+
+  // 面板状态徽章的可观察 Transport: 字节源 = 通道字节源; 数值口 = 发送上溯目标;
+  // FrameDecoder raw 口 = null (节点旁路, 无固定连接语义)
+  const viewTransportId = isByteSrc
+    ? (channelInfo?.transportId ?? null)
+    : isNum
+      ? sendTargetId
+      : null;
+  const viewConnState = useAppStore((s) =>
+    viewTransportId ? (s.connectionStates[viewTransportId] ?? 'Disconnected') : null
+  );
+  const sendTargetLabel = sendTargetId
+    ? (() => {
+        const n = rfNodes.find((n) => n.id === sendTargetId);
+        const cfg = (n?.data as { config?: { kind?: string } } | undefined)?.config;
+        return n ? `${cfg?.kind ?? '?'} (${sendTargetId.slice(-4)})` : null;
+      })()
+    : null;
 
   const nodeBufferKey = isDec && selectedChannel ? selectedChannel.sourceId : null;
   const isFiltered = directionFilter !== 'all' || searchTerm.trim() !== '';
@@ -122,38 +161,46 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
     [directionFilter, searchTerm]
   );
 
-  // 节点 buffer (过滤与否都需要: 过滤包装以它为数据源)
+  const backendFilter = isFiltered ? filterOptions : undefined;
+
+  // 节点 buffer。方向和搜索由后端订阅源执行。
   const [nodeBuffer, setNodeBuffer] = useState<RawDataBuffer | null>(null);
   useEffect(() => {
     if (!nodeBufferKey) {
       setNodeBuffer(null);
       return;
     }
-    const acquired = acquireRawDataNode(nodeBufferKey);
+    const acquired = acquireRawDataNode(nodeBufferKey, backendFilter);
     setNodeBuffer(acquired);
-    return () => releaseRawDataNode(nodeBufferKey);
-  }, [nodeBufferKey]);
+    return () => releaseRawDataNode(nodeBufferKey, backendFilter);
+  }, [nodeBufferKey, backendFilter]);
 
-  // 过滤模式: 本地增量过滤视图 (复用源 buffer 既有数据, 零额外 IPC)
-  const [filteredBuffer, setFilteredBuffer] = useState<FilteredRawDataBuffer | null>(null);
+  // 字节源通道 buffer: 按 Transport 引用计数获取 (同 Transport 多卡片自动共享同一订阅);
+  // 上溯失败 (无 transportId) 用空 buffer 占位；RawData 不再维持隐藏的全局订阅。
+  const byteTransportId = isByteSrc ? (channelInfo?.transportId ?? null) : null;
+  const transportBufferKey = byteTransportId ?? null;
+  const [transportBuffer, setTransportBuffer] = useState<RawDataBuffer | null>(null);
   useEffect(() => {
-    if (!isFiltered || isNum) {
-      setFilteredBuffer(null);
+    if (!transportBufferKey) {
+      setTransportBuffer(null);
       return;
     }
-    const t0 = performance.now();
-    perfEvent(`rawdata filter ON dir=${filterOptions.directionFilter} search="${filterOptions.searchTerm}"`);
-    const buf = new FilteredRawDataBuffer(
-      nodeBuffer ?? rawDataBuffer,
-      filterOptions.directionFilter,
-      parseSearchPattern(filterOptions.searchTerm)
-    );
-    setFilteredBuffer(buf);
-    return () => {
-      buf.dispose();
-      perfEvent(`rawdata filter OFF, 存活 ${(performance.now() - t0).toFixed(0)}ms`);
-    };
-  }, [isFiltered, isNum, nodeBuffer, filterOptions]);
+    const acquired = acquireRawDataTransport(transportBufferKey, backendFilter);
+    setTransportBuffer(acquired);
+    return () => releaseRawDataTransport(transportBufferKey, backendFilter);
+  }, [transportBufferKey, backendFilter]);
+
+  const emptyByteBufferRef = useRef<RawDataBuffer | null>(null);
+  // 惰性取空 buffer (占位: 无 transportId / 无连线时保持订阅链类型完整)
+  const getEmptyByteBuffer = useCallback((): RawDataBuffer => {
+    if (!emptyByteBufferRef.current) emptyByteBufferRef.current = new RawDataBuffer();
+    return emptyByteBufferRef.current;
+  }, []);
+  const byteSourceBuffer = !isByteSrc
+    ? null
+    : byteTransportId
+      ? transportBuffer
+      : getEmptyByteBuffer();
 
   // 调试: 长任务监控 — 主线程单次任务 >100ms 即记录 (卡死定位)
   useEffect(() => {
@@ -171,7 +218,7 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
     }
   }, []);
 
-  const buffer = filteredBuffer ?? nodeBuffer ?? rawDataBuffer;
+  const buffer = nodeBuffer ?? byteSourceBuffer ?? getEmptyByteBuffer();
 
   // 强制重新渲染的版本号
   const [version, setVersion] = useState(0);
@@ -180,34 +227,21 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
   }, [buffer]);
 
   // ---- 数值通道视图 ----
-  const NUM_MAX_ROWS = 500;
-  const [numRows, setNumRows] = useState<Array<{ seq: number; ts: number; value: number }>>([]);
-  const numSeqRef = useRef(0);
   const numScrollRef = useRef<HTMLDivElement>(null);
-
-  const graphOutputsRef = useRef(graphOutputs);
-  graphOutputsRef.current = graphOutputs;
-
-  useEffect(() => {
-    if (!isNum || !selectedChannel) return;
-    const handle = selectedChannel.sourceHandle ?? 'data';
-    const v = graphOutputsRef.current[selectedChannel.sourceId]?.[handle];
-    if (v === undefined) return;
-    setNumRows((prev) => {
-      const next = [...prev, { seq: numSeqRef.current++, ts: Date.now(), value: v }];
-      return next.length > NUM_MAX_ROWS ? next.slice(-NUM_MAX_ROWS) : next;
-    });
-  }, [graphOutputsTick, isNum, selectedChannel]);
-
-  useEffect(() => {
-    if (!isNum || !selectedChannel) setNumRows([]);
-  }, [isNum, selectedChannel]);
-
-  useEffect(() => {
-    if (!autoScroll) return;
-    const el = numScrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [numRows, autoScroll]);
+  const sampleStore = useMemo(
+    () =>
+      getPortSampleStore(
+        isNum ? selectedChannel?.sourceId : undefined,
+        isNum ? (selectedChannel?.sourceHandle ?? 'data') : undefined
+      ),
+    [isNum, selectedChannel?.sourceId, selectedChannel?.sourceHandle]
+  );
+  const sampleSnapshot = useSyncExternalStore(
+    sampleStore.subscribe,
+    sampleStore.getSnapshot,
+    sampleStore.getSnapshot
+  );
+  const numRows = sampleSnapshot.rows;
 
   const lineCount = buffer.lineCount;
   const modeCount = grouping === 'line' ? buffer.newlineLineCount : lineCount;
@@ -223,63 +257,57 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
 
   useEffect(() => {
     clearSelection();
+    userScrolledRef.current = false;
   }, [clearSelection, grouping, channel]);
 
-  // 自动滚动动画
+  // 自动滚动到最新结果：每次数据帧只安排一次末尾锚定，不做会持续追赶的平滑动画。
   useEffect(() => {
     if (!autoScroll) {
       isAutoScrollingRef.current = false;
       return;
     }
-    if (userScrolledRef.current || modeCount === 0) return;
-    isAutoScrollingRef.current = true;
-    const el = parentRef.current;
-    if (el) {
-      const start = el.scrollTop;
-      const duration = 250;
-      const t0 = performance.now();
-      const easeOutCubic = (p: number) => 1 - Math.pow(1 - p, 3);
-      const step = (now: number) => {
-        const p = Math.min(1, (now - t0) / duration);
-        const target = Math.max(0, el.scrollHeight - el.clientHeight);
-        el.scrollTop = start + (target - start) * easeOutCubic(p);
-        if (p < 1) {
-          scrollAnimRef.current = requestAnimationFrame(step);
-        } else {
-          scrollAnimRef.current = null;
-          isAutoScrollingRef.current = false;
-        }
-      };
-      scrollAnimRef.current = requestAnimationFrame(step);
-    }
+    const activeCount = isNum ? numRows.length : modeCount;
+    if (userScrolledRef.current || activeCount === 0) return;
+    if (scrollAnimRef.current !== null) cancelAnimationFrame(scrollAnimRef.current);
+    scrollAnimRef.current = requestAnimationFrame(() => {
+      scrollAnimRef.current = null;
+      const el = isNum ? numScrollRef.current : parentRef.current;
+      if (!el) return;
+      isAutoScrollingRef.current = true;
+      el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => {
+        isAutoScrollingRef.current = false;
+      });
+    });
     return () => {
       if (scrollAnimRef.current !== null) {
         cancelAnimationFrame(scrollAnimRef.current);
         scrollAnimRef.current = null;
       }
     };
-  }, [modeCount, autoScroll, version, buffer]);
+  }, [modeCount, numRows.length, sampleSnapshot.version, isNum, autoScroll, version, buffer]);
 
   const handleScroll = useCallback(() => {
-    if (isAutoScrollingRef.current || !parentRef.current) return;
-    const el = parentRef.current;
+    if (isAutoScrollingRef.current) return;
+    const el = isNum ? numScrollRef.current : parentRef.current;
+    if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
     userScrolledRef.current = !atBottom;
-  }, []);
+  }, [isNum]);
 
   const handleClear = () => {
     if (isNum) {
-      setNumRows([]);
+      sampleStore.clear();
       return;
     }
     clearData();
-    if (buffer !== rawDataBuffer) buffer.clear();
+    buffer.clear();
     clearSelection();
     userScrolledRef.current = false;
   };
 
   const handleSend = () => {
-    if (!sendContent || !effectiveTransportId) return;
+    if (!sendContent || !sendTargetId) return;
     let suffix = '';
     switch (appendMode) {
       case 'nl': suffix = '\n'; break;
@@ -287,7 +315,7 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
       case 'nl_tab': suffix = '\n\t'; break;
       case 'none': suffix = ''; break;
     }
-    sendText(effectiveTransportId, sendContent + suffix);
+    sendText(sendTargetId, sendContent + suffix);
     setSendContent('');
   };
 
@@ -341,6 +369,19 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
     [selection]
   );
 
+  // 无连线空态: 纯端口制下没有可显示的输入 → 引导用户先建立连线, 不订阅任何数据
+  if (!selectedChannel) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-2 text-text-secondary">
+        <Unplug size={22} className="opacity-50" />
+        <span className="text-xs">{t(lang, 'rawDataNoInputTitle')}</span>
+        <span className="text-[10px] opacity-70 px-6 text-center break-all">
+          {t(lang, 'rawDataNoInputHint')}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <RawDataViewHeader
@@ -363,11 +404,12 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
         userScrolledRef={userScrolledRef}
         lang={lang}
         sourceLabel={sourceLabel}
+        connState={viewConnState}
         onGroupingChange={setGrouping}
         onReprChange={setRepr}
         onDirectionFilterChange={setDirectionFilter}
         onSearchTermChange={setSearchTerm}
-        onChannelChange={setChannel}
+        onChannelChange={onChannelChange}
         onAutoScrollChange={setAutoScroll}
         onShowTimestampChange={setShowTimestamp}
         onShowSettingsChange={setShowSettings}
@@ -381,14 +423,21 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
           <>
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
               {isNum ? (
-                <div ref={numScrollRef} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                   <RawDataViewNumericContent
                     numRows={numRows}
+                    status={sampleSnapshot.status}
+                    previewSkipped={sampleSnapshot.previewSkipped}
+                    retentionEvicted={sampleSnapshot.retentionEvicted}
+                    ingressDropped={sampleSnapshot.ingressDropped}
+                    error={sampleSnapshot.error}
                     showTimestamp={showTimestamp}
                     lang={lang}
                     grouping={grouping}
                     repr={repr}
                     channel={channel}
+                    scrollRef={numScrollRef}
+                    onScroll={handleScroll}
                   />
                 </div>
               ) : (
@@ -413,7 +462,7 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
                 />
               )}
             </div>
-            <div className="w-[220px] flex-shrink-0 border-l border-border bg-bg-sidebar flex flex-col overflow-hidden">
+            <div className="w-[220px] shrink-0 border-l border-border bg-bg-sidebar flex flex-col overflow-hidden">
               {showSettings && (
                 <div className="flex-1 overflow-y-auto p-3">
                   <RawDataViewSettings
@@ -438,9 +487,7 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
                   onSend={handleSend}
                   lang={lang}
                   compact
-                  transports={transportOptions}
-                  selectedTransport={effectiveTransportId}
-                  onTransportChange={setRawDataSourceNodeId}
+                  targetTransportLabel={sendTargetLabel}
                 />
               </div>
             </div>
@@ -448,14 +495,21 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
         ) : (
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             {isNum ? (
-              <div ref={numScrollRef} className="flex-1 flex flex-col min-h-0 overflow-hidden">
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
                 <RawDataViewNumericContent
                   numRows={numRows}
+                  status={sampleSnapshot.status}
+                  previewSkipped={sampleSnapshot.previewSkipped}
+                  retentionEvicted={sampleSnapshot.retentionEvicted}
+                  ingressDropped={sampleSnapshot.ingressDropped}
+                  error={sampleSnapshot.error}
                   showTimestamp={showTimestamp}
                   lang={lang}
                   grouping={grouping}
                   repr={repr}
                   channel={channel}
+                  scrollRef={numScrollRef}
+                  onScroll={handleScroll}
                 />
               </div>
             ) : (
@@ -501,9 +555,7 @@ export function RawDataView({ widgetId }: { widgetId?: string }) {
               onSendContentChange={setSendContent}
               onSend={handleSend}
               lang={lang}
-              transports={transportOptions}
-              selectedTransport={effectiveTransportId}
-              onTransportChange={setRawDataSourceNodeId}
+              targetTransportLabel={sendTargetLabel}
             />
           </div>
         )}

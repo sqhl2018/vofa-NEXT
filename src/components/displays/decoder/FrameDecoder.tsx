@@ -11,7 +11,7 @@ import {
 import type {
   WidgetConfig,
   DecoderBlock,
-  DecoderBlockType,
+  FrameDecoderBlock,
   InputFormat,
   FrameDecoderManualResult,
 } from '../../../types';
@@ -19,11 +19,13 @@ import { useAppStore } from '../../../store/appStore';
 import { api } from '../../../lib/tauri/tauri';
 import { t } from '../../../i18n';
 import { nanoid } from 'nanoid';
+import type {
+  HistoryEntry,
+  ExampleEntry} from './frameDecoderShared';
 import {
   BLOCK_TYPE_CONFIG,
+  FRAME_DECODER_ADDABLE_TYPES,
   HISTORY_MAX,
-  HistoryEntry,
-  ExampleEntry,
   loadHistory,
   saveHistory,
   getOutputPortNames,
@@ -32,6 +34,7 @@ import {
 import { BlockEditor } from './FrameDecoderBlockEditor';
 import { LiveModePanel } from './FrameDecoderLivePanel';
 import { ManualModePanel } from './FrameDecoderManualPanel';
+import { useNumericInputs } from '../../../lib/hooks/useNumericPort';
 
 interface FrameDecoderProps {
   widget: Extract<WidgetConfig, { kind: 'FrameDecoder' }>;
@@ -52,11 +55,19 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
   const { id, blocks, mode } = params;
   const updateWidget = useAppStore((s) => s.updateWidget);
   const lang = useAppStore((s) => s.lang);
-  const graphOutputs = useAppStore((s) => s.graphOutputs);
 
   // live 模式: 读取本 widget 的输出端口值
   const portNames = useMemo(() => getOutputPortNames(blocks), [blocks]);
-  const liveOutputs = graphOutputs[id] ?? {};
+  const liveStates = useNumericInputs(id, portNames);
+  const liveOutputs = useMemo(
+    () => Object.fromEntries(
+      portNames.flatMap((port) => {
+        const value = liveStates[port]?.latest?.value;
+        return value === undefined ? [] : [[port, value]];
+      }),
+    ),
+    [portNames, liveStates],
+  );
 
   // manual 模式状态
   const [format, setFormat] = useState<InputFormat>('hex');
@@ -107,8 +118,9 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
     updateWidget(id, { kind: 'FrameDecoder', params: { ...params, ...changes } });
   };
 
-  const addBlock = (type: DecoderBlockType) => {
-    const defaults: Record<DecoderBlockType, Partial<DecoderBlock>> = {
+  /// FrameDecoder 控件仅支持 7 种基础块 (扩展块 csv/asciiField/samples 仅供协议 schema 编辑器)
+  const addBlock = (type: (typeof FRAME_DECODER_ADDABLE_TYPES)[number]) => {
+    const defaults: Record<(typeof FRAME_DECODER_ADDABLE_TYPES)[number], Partial<DecoderBlock>> = {
       header: { label: '', hex: 'AA' },
       length: { label: '', fieldType: 'uint8', portName: 'length', unit: 'bytes' },
       id: { label: '', fieldType: 'uint8', portName: 'id_value' },
@@ -117,14 +129,14 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
       checksum: { label: '', algorithm: 'sum8', cover: 'all_prior', position: 'append' },
       tail: { label: '', hex: 'FF' },
     };
-    const newBlock = { id: nanoid(6), type, ...defaults[type] } as DecoderBlock;
+    const newBlock = { id: nanoid(6), type, ...defaults[type] } as FrameDecoderBlock;
     updateParams({ blocks: [...blocks, newBlock] });
     setExpandedIds((prev) => new Set(prev).add(newBlock.id));
   };
 
   const updateBlock = (blockId: string, changes: Partial<DecoderBlock>) => {
     updateParams({
-      blocks: blocks.map((b) => (b.id === blockId ? { ...b, ...changes } as DecoderBlock : b)),
+      blocks: blocks.map((b) => (b.id === blockId ? { ...b, ...changes } as FrameDecoderBlock : b)),
     });
   };
 
@@ -141,7 +153,7 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
   const handleDragStart = (blockId: string) => (e: React.DragEvent) => {
     e.dataTransfer.effectAllowed = 'move';
     e.dataTransfer.setData('text/plain', blockId);
-    const blockEl = (e.currentTarget as HTMLElement).closest('[data-block-id]') as HTMLElement | null;
+    const blockEl = (e.currentTarget as HTMLElement).closest('[data-block-id]');
     if (blockEl) {
       e.dataTransfer.setDragImage(blockEl, 12, 12);
     }
@@ -226,7 +238,7 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
       {/* 主区: 块列表 (可拖拽排序) */}
       <div className="flex-1 min-w-0 min-h-0 flex flex-col gap-2 p-3 overflow-y-auto bg-bg-sidebar">
         {/* 顶部: 标题 + 模式切换 */}
-        <div className="flex items-center justify-between pb-1.5 border-b border-border flex-shrink-0">
+        <div className="flex items-center justify-between pb-1.5 border-b border-border shrink-0">
           <span className="text-base font-semibold text-text-bright">{params.label}</span>
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-text-secondary">{blocks.length} blocks</span>
@@ -289,7 +301,7 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
                   onClick={() => toggleExpand(block.id)}
                 >
                   <div
-                    className="inline-flex items-center justify-center p-0.5 cursor-grab active:cursor-grabbing text-text-secondary hover:text-text-primary flex-shrink-0"
+                    className="inline-flex items-center justify-center p-0.5 cursor-grab active:cursor-grabbing text-text-secondary hover:text-text-primary shrink-0"
                     title={t(lang, 'cmdDragToReorder')}
                     draggable
                     onDragStart={handleDragStart(block.id)}
@@ -298,22 +310,22 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
                     <GripVertical size={12} className="pointer-events-none" />
                   </div>
                   <span
-                    className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded-sm text-[9px] font-semibold uppercase tracking-wide flex-shrink-0 border ${cfg.badgeClass}`}
+                    className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded-sm text-[9px] font-semibold uppercase tracking-wide shrink-0 border ${cfg.badgeClass}`}
                   >
                     {cfg.icon}
                     {t(lang, cfg.labelKey)}
                   </span>
                   {block.label && (
-                    <span className="text-xs text-text-primary truncate flex-shrink-0">{block.label}</span>
+                    <span className="text-xs text-text-primary truncate shrink-0">{block.label}</span>
                   )}
                   <span className="text-[10px] text-text-secondary font-mono truncate flex-1 min-w-0">
                     {blockSummary(block)}
                   </span>
-                  <span className="text-text-secondary flex-shrink-0 p-0.5 pointer-events-none">
+                  <span className="text-text-secondary shrink-0 p-0.5 pointer-events-none">
                     {isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   </span>
                   <button
-                    className="text-text-secondary hover:text-red flex-shrink-0 p-0.5"
+                    className="text-text-secondary hover:text-red shrink-0 p-0.5"
                     onClick={(e) => { e.stopPropagation(); removeBlock(block.id); }}
                     title={t(lang, 'removeWidget')}
                   >
@@ -332,9 +344,9 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
           })}
         </div>
 
-        {/* 添加块按钮 */}
-        <div className="flex flex-wrap gap-1 pt-1 border-t border-border flex-shrink-0">
-          {(Object.keys(BLOCK_TYPE_CONFIG) as DecoderBlockType[]).map((bt) => {
+        {/* 添加块按钮 (仅基础 7 种; 扩展块走协议 schema 编辑器) */}
+        <div className="flex flex-wrap gap-1 pt-1 border-t border-border shrink-0">
+          {FRAME_DECODER_ADDABLE_TYPES.map((bt) => {
             const cfg = BLOCK_TYPE_CONFIG[bt];
             return (
               <button
@@ -355,7 +367,7 @@ export function FrameDecoder({ widget }: FrameDecoderProps) {
       </div>
 
       {/* 侧栏: 模式相关内容 + 全局设置 */}
-      <div className="w-[320px] flex-shrink-0 border-l border-border bg-bg-sidebar overflow-y-auto flex flex-col gap-2 p-3">
+      <div className="w-[320px] shrink-0 border-l border-border bg-bg-sidebar overflow-y-auto flex flex-col gap-2 p-3">
         {mode === 'live' ? (
           <LiveModePanel
             portNames={portNames}

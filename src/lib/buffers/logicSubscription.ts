@@ -1,19 +1,18 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { LogicSampleBatch, DecodedEventBatch } from '../../types';
-import { makeOrderedSink, subscribeSharded } from './shardedSubscription';
+import { subscribeDisplay } from './shardedSubscription';
 
 /// 订阅逻辑采样数据 — 统一分片流 (增量 drain, 首批回溯最近历史, 之后严格增量无重复)
 /// 返回取消订阅函数
 export function subscribeLogicSamples(
   onEvent: (batch: LogicSampleBatch) => void,
-  options?: { intervalMs?: number; maxSamples?: number }
+  options?: { intervalMs?: number; maxSamples?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<LogicSampleBatch>(
-    'subscribe_logic_samples',
-    'unsubscribe_logic_samples',
-    {},
-    makeOrderedSink(onEvent),
-    { intervalMs: options?.intervalMs, maxSamples: options?.maxSamples }
+  return subscribeDisplay<LogicSampleBatch>(
+    { kind: 'logic_samples' },
+    'logic_samples',
+    onEvent,
+    { intervalMs: options?.intervalMs, maxItems: options?.maxSamples },
   );
 }
 
@@ -21,14 +20,13 @@ export function subscribeLogicSamples(
 /// 返回取消订阅函数
 export function subscribeDecodedEvents(
   onEvent: (batch: DecodedEventBatch) => void,
-  options?: { intervalMs?: number; maxEvents?: number }
+  options?: { intervalMs?: number; maxEvents?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<DecodedEventBatch>(
-    'subscribe_decoded_events',
-    'unsubscribe_decoded_events',
-    {},
-    makeOrderedSink(onEvent),
-    { intervalMs: options?.intervalMs, maxEvents: options?.maxEvents }
+  return subscribeDisplay<DecodedEventBatch>(
+    { kind: 'decoded_events' },
+    'decoded_events',
+    onEvent,
+    { intervalMs: options?.intervalMs, maxItems: options?.maxEvents },
   );
 }
 
@@ -46,14 +44,13 @@ export interface LogicSampleFilterOptions {
 export function subscribeLogicSamplesFiltered(
   filter: LogicSampleFilterOptions,
   onEvent: (batch: LogicSampleBatch) => void,
-  options?: { intervalMs?: number; maxSamples?: number }
+  options?: { intervalMs?: number; maxSamples?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<LogicSampleBatch>(
-    'subscribe_logic_samples_filtered',
-    'unsubscribe_logic_samples',
-    { filter },
-    makeOrderedSink(onEvent),
-    { intervalMs: options?.intervalMs, maxSamples: options?.maxSamples }
+  return subscribeDisplay<LogicSampleBatch>(
+    { kind: 'logic_samples', filter },
+    'logic_samples',
+    onEvent,
+    { intervalMs: options?.intervalMs, maxItems: options?.maxSamples },
   );
 }
 
@@ -71,19 +68,20 @@ export interface DecodedEventFilterOptions {
 export function subscribeDecodedEventsFiltered(
   filter: DecodedEventFilterOptions,
   onEvent: (batch: DecodedEventBatch) => void,
-  options?: { intervalMs?: number; maxEvents?: number }
+  options?: { intervalMs?: number; maxEvents?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<DecodedEventBatch>(
-    'subscribe_decoded_events_filtered',
-    'unsubscribe_decoded_events',
-    { filter },
-    makeOrderedSink(onEvent),
-    { intervalMs: options?.intervalMs, maxEvents: options?.maxEvents }
+  return subscribeDisplay<DecodedEventBatch>(
+    { kind: 'decoded_events', filter },
+    'decoded_events',
+    onEvent,
+    { intervalMs: options?.intervalMs, maxItems: options?.maxEvents },
   );
 }
 
 /// 同步查询: 获取最近 N 个逻辑采样
-export function getRecentLogicSamples(count: number): Promise<LogicSampleBatch> {
+export function getRecentLogicSamples(
+  count: number,
+): Promise<LogicSampleBatch> {
   return invoke('get_recent_logic_samples', { count });
 }
 
@@ -93,7 +91,9 @@ export function clearLogicBuffer(): Promise<void> {
 }
 
 /// 同步查询: 获取最近 N 个解码事件
-export function getRecentDecodedEvents(count: number): Promise<DecodedEventBatch> {
+export function getRecentDecodedEvents(
+  count: number,
+): Promise<DecodedEventBatch> {
   return invoke('get_recent_decoded_events', { count });
 }
 

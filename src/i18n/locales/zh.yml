@@ -3,6 +3,11 @@ portConfig: 串口配置
 deviceConfig: 设备配置
 dataInterface: 数据接口
 protocolEngine: 协议引擎
+protocolCustom: 自定义块
+protocolCustomBlocks: 帧块列表
+protocolResetToPreset: 重置为预设
+protocolDerivedPorts: 派生端口
+protocolCustomDesc: 自定义帧块解析, 端口由 field/bitfield/csv 块派生, 可任意命名。
 transportType: 数据接口
 widgetPalette: 控件面板
 aiAssistant: AI 助手
@@ -17,6 +22,7 @@ connecting: 连接中...
 connected: 已连接
 disconnected: 已断开
 notConnected: 未连接
+connError: 连接错误
 startTestData: 开始生成
 stopTestData: 停止生成
 testDataRunning: 运行中
@@ -118,8 +124,57 @@ rxFrames: 接收帧
 txFrames: 发送帧
 
 # AI
-aiPlaceholder: AI 功能即将上线...
+aiPlaceholder: 在设置中配置服务商与 API Key 后即可开始对话;已启用的 MCP 工具会自动提供给模型
 inputMessage: 输入消息...
+
+# AI 对话面板
+aiToolCount: 工具 {n}
+aiToolRunning: 调用中...
+aiToolDone: 完成
+aiToolFailed: 失败
+aiStop: 停止
+aiSend: 发送
+aiClear: 清空会话
+aiClose: 关闭
+aiMcpServers: MCP 服务器
+aiMcpServersHint: 对话可调用已启用服务器的工具
+aiNoServers: 尚未配置外部 MCP 服务器
+aiAddServer: 添加服务器
+aiServerName: 名称 (如 filesystem)
+aiServerCommand: 启动命令 (如 npx -y @modelcontextprotocol/server-filesystem)
+aiDeleteServer: 删除服务器
+aiServerStopped: 本地 MCP 未运行
+aiSessionSwitch: 切换会话
+aiSessionNew: 新会话
+aiSessionRename: 重命名会话
+aiSessionDelete: 删除会话
+aiSessionEmpty: 暂无会话
+aiCopy: 复制
+aiRetry: 重新生成
+aiErrMissingApiKey: 「{adapter}」缺少 API Key,请在 设置 → AI 中填写
+aiErrMissingBaseUrl: 「OpenAI 兼容」适配器需要填写自定义端点 (Base URL)
+aiErrMissingModel: 「{adapter}」未配置模型名
+aiErrUnknownAdapter: 不支持的模型服务商:{adapter}
+aiErrProviderRequest: 请求 {adapter} / {model} 失败
+aiErrMaxToolRounds: 工具调用循环超过 {rounds} 轮仍未得到最终回答
+aiErrCancelled: 对话已取消
+aiErrKeyring: 系统钥匙串访问失败
+aiErrKeyringAccessDenied: 系统钥匙串访问授权被拒绝
+keychainPermissionTitle: 需要访问系统钥匙串
+keychainPermissionDescription: 上次请求访问系统钥匙串时未获得授权，已保存的 AI 服务商密钥暂时无法读取。
+keychainPermissionPurpose: VOFA-NEXT 使用系统钥匙串安全保存 AI 服务商 API Key，密钥不会写入设置文件。
+keychainPermissionImpact: 拒绝访问只会影响 AI 密钥的读取和保存；串口、图表及其他功能不受影响。
+keychainPermissionRetryHint: 点击“再次请求”后，macOS 将重新显示系统授权窗口。
+keychainPermissionDontRemind: 不再提醒
+keychainPermissionLater: 稍后处理
+keychainPermissionRequestAgain: 再次请求
+keychainPermissionRequesting: 正在请求…
+keychainPermissionDeniedAgain: 钥匙串访问仍未获得授权。你可以再次尝试，或稍后处理。
+keychainPermissionRetryFailed: 无法访问系统钥匙串。请确认钥匙串可用后重试。
+aiErrUnknownSession: 会话不存在 (可能已被删除)
+aiErrPersist: 对话记录写入失败
+aiSendBlocked: 无法发送 —
+aiOpenSettings: 打开设置
 
 # 控件区
 controlArea: 控件区
@@ -242,6 +297,8 @@ sharedYDesc: 切换所有通道是否共用同一个 Y 轴 (V/div 与 Position)
 sharedYHint: 共用 Y 模式 — V/div 与 Position 请在"通道"Tab 统一设置
 cursorHideHint: 隐藏光标
 cursorHiddenHint: 光标已隐藏 (松开按键恢复)
+waveformInteractHintTitle: 波形图交互
+waveformInteractHintMessage: 左键拖动可框选数据范围，用于复制或导出 CSV；按住 Shift 左键或用右键拖动可平移视图。
 dynamicSeriesToggle: 切换动态 series 模式 (固定通道槽 ↔ 按连接数动态显示)
 dynamicSeriesOff: 固定
 dynamicSeriesOn: 动态
@@ -269,6 +326,8 @@ notifSendFailed: 发送失败
 notifSetProtocolFailed: 协议配置失败
 notifClearBufferFailed: 清空数据失败
 notifNodeGraphSyncFailed: 节点图同步失败
+notifTransportHotUpdateFailed: 连接热更新失败
+notifReconnect: 重新连接
 notifPollChannelsFailed: 通道检测轮询失败
 notifStartTestDataFailed: 启动测试数据失败
 notifStopTestDataFailed: 停止测试数据失败
@@ -277,6 +336,17 @@ notifDismiss: 关闭
 notifDismissAll: 关闭全部
 notifMore: "还有 {{count}} 条通知"
 notifCollapsedHint: 同源错误累计次数
+
+# 节点错误首次引导 (每种错误类型仅显示一次, 由 errorGuidance.ts 管理)
+errorGuidePrefix: 提示
+errorGuideTransport: 传输层打开失败, 请检查线缆连接与驱动, 然后刷新端口列表重试
+errorGuideProtocol: 协议引擎创建失败, 请检查协议配置与通道数是否正确
+errorGuidePortNotFound: 未找到该端口, 请确认设备已连接, 并点击刷新更新端口列表
+errorGuidePortAlreadyOpen: 该端口已被占用, 请关闭其他占用此端口的程序 (如串口助手) 后重试
+errorGuidePortNotOpen: 端口尚未打开, 请先连接该 Transport 节点再执行操作
+errorGuideIo: 系统 IO 错误, 请检查设备连接是否稳定, 以及当前用户是否有端口访问权限
+errorGuideConfig: 节点配置有误, 请检查节点参数 (端口/波特率/协议等) 是否完整合法
+errorGuideSerde: 数据序列化失败, 请检查发送内容或配置格式是否正确
 
 # 设置系统
 settings: 设置
@@ -307,6 +377,26 @@ updateReady: 更新已安装，重启后生效
 updateRelaunch: 重启应用
 updateUpToDate: 已是最新版本
 updateError: 更新失败
+updateAutoCheck: 自动检查更新
+updateAutoCheckDesc: 启动时自动检查是否有新版本
+updateChannel: 更新通道
+updateChannelDesc: 选择接收正式版或预发布版更新
+updateChannelStable: 正式版 (Stable)
+updateChannelBeta: 测试版 (Beta)
+updateChannelConfirmTitle: 切换更新通道
+updateChannelToBetaMsg: 切换到测试版通道后，将收到预发布版本更新，可能包含不稳定功能。确定切换吗？
+updateChannelToStableMsg: 切换到正式版通道后，仅接收正式版更新。确定切换吗？
+updateAvailableTitle: 发现新版本
+updateReleaseDate: 发布日期
+updateReleaseNotes: 更新内容
+updateNow: 立即更新
+updateLater: 稍后
+updateSkipVersion: 跳过此版本
+updateRestart: 重启更新
+updateRetry: 重试
+updateReadyHint: 更新已就绪，重启后生效
+updateConfirm: 确定
+updateCancel: 取消
 backupExportSuccess: 配置导出成功
 backupExportSuccessDesc: 应用完整配置已保存到文件
 backupImportSuccess: 配置导入成功
@@ -348,6 +438,8 @@ templateCan: CAN
 templateCanDesc: Slcan 传输 + CAN 帧视图，连接 CAN 分析仪即可收发
 templateSerial: 串口
 templateSerialDesc: 串口浮点数据流 + 仪表 / 数字显示控件
+templateCustomProtocol: 自定义协议
+templateCustomProtocolDesc: 自定义块协议（命名通道 speed/temp）+ 多帧命令发送器，TestData 无需硬件即可运行
 templateDemo: 综合演示
 templateDemoDesc: 滤波 + 数学 + 波形 / 仪表的完整流水线示例
 templateApplyTitle: 应用模板
@@ -448,6 +540,8 @@ settingCrosshairVisible: 显示十字线
 settingCrosshairVisibleDesc: 显示鼠标跟随的横竖十字辅助线
 settingHoverPointsVisible: 显示悬停采样点
 settingHoverPointsVisibleDesc: 显示鼠标悬停时曲线上最近采样点的标记 (光标吸附开启时自动隐藏)
+settingPauseOnInteract: 交互时自动暂停
+settingPauseOnInteractDesc: 缩放或拖动波形时自动暂停实时刷新; 关闭后交互不打断刷新, 运行中也可水平拖动回看历史 (拖回最右端恢复实时跟随)
 
 # 设置项 - Data Cache
 settingWaveformBufferPoints: 波形缓存点数
@@ -484,20 +578,48 @@ settingNotifShowOnError: 错误通知
 settingNotifShowOnErrorDesc: 发生错误时显示通知
 
 # 设置项 - Performance
-settingMaxFeedWorkers: 并行解析 Worker 上限
-settingMaxFeedWorkersDesc: 并行解析数据的 worker 数量上限, 数据源速率高时可调大
+settingMaxFeedWorkers: 自动并发 Worker 上限
+settingMaxFeedWorkersDesc: 后端根据积压自动扩缩容，实际 worker 数不超过 CPU 数和此安全上限
 settingFeedParallelUnit: 并行分发单元
 settingFeedParallelUnitDesc: 每次分发给并行 worker 的消息批大小
 settingMinWorkerBytesKb: Worker 最小数据量 (KB)
 settingMinWorkerBytesKbDesc: 低于该数据量时不拆分给多个 worker, 避免调度开销
 settingCoalesceMaxMsgs: 合批最大消息数
 settingCoalesceMaxMsgsDesc: 单次合批推送允许的最大消息条数
-settingCoalesceMaxBytesKb: 合批最大字节数 (KB)
-settingCoalesceMaxBytesKbDesc: 单次合批推送允许的最大字节数
-settingMaxStreamShards: 流分片上限
-settingMaxStreamShardsDesc: 订阅流的最大分片数量, 分片越多并发推送能力越强
-settingParseChannelCap: 解析通道容量
-settingParseChannelCapDesc: 解析管道的缓冲容量, 修改后下次连接生效
+settingCoalesceMaxBytesKb: 数据管道内存预算 (MB)
+settingCoalesceMaxBytesKbDesc: 所有后端 Topic 历史和排队数据使用的安全内存上限
+settingMaxStreamShards: 预览帧率上限
+settingMaxStreamShardsDesc: 前端预览最大刷新率；不会降低后端采集和解析速度
+settingParseChannelCap: 预览带宽上限 (MB/s)
+settingParseChannelCapDesc: IPC 预览的安全带宽上限；过载时只跳过旧预览批次
+
+# AI (设置分类 + 对话面板)
+settingsAi: AI
+settingAiAdapter: 模型服务商
+settingAiAdapterDesc: 选择 LLM 服务商协议 (OpenAI 兼容可接入任意自建/网关服务)
+settingAiBaseUrl: 自定义端点 (Base URL)
+settingAiBaseUrlDesc: 服务 API 地址;留空用服务商默认;选"OpenAI 兼容"时必填 (如 https://api.deepseek.com/v1)
+settingAiApiKey: API Key
+settingAiApiKeyDesc: 服务商密钥 (保存到系统钥匙串, 不写入设置文件; 仅随请求发送给所配服务商)
+settingAiModel: 模型名
+settingAiModelDesc: 如 gpt-4o-mini / deepseek-chat / glm-4.7 / qwen-max
+settingAiTemperature: 温度
+settingAiTemperatureDesc: 采样温度 (0-2), 留空使用服务商默认
+settingAiMaxTokens: 最大生成长度
+settingAiMaxTokensDesc: 单次回复的最大 token 数, 留空使用服务商默认
+settingAiSystemPrompt: 系统提示词
+settingAiSystemPromptDesc: 发送给模型的系统级指令 (可描述设备协议, 让 AI 更懂上下文)
+settingAiMaxToolRounds: 工具调用轮次上限
+settingAiMaxToolRoundsDesc: 单次对话允许的最大"模型调用工具→回填结果"循环轮数
+settingAiBuiltinTools: 启用内置工具
+settingAiBuiltinToolsDesc: 对话中允许 AI 编辑节点图、操作软件、读取数据并查询内置知识库 (skills)
+settingAiMcpTools: 启用 MCP 工具
+settingAiMcpToolsDesc: 对话时自动把已启用外部 MCP server 的工具提供给模型
+settingAiMcpServerPort: 本地 MCP 端口
+settingAiMcpServerPortDesc: 对外暴露本应用能力的 MCP 服务端口 (仅监听 127.0.0.1)
+settingAiOrcaHint: OrcaRouter 聚合网关 — 模型名需带厂商前缀, 如 openai/gpt-4o-mini、anthropic/claude-sonnet-4
+settingAiOrcaGetKey: 获取 API Key · 支持项目
+settingAiOrcaFreeModels: 免费模型:获取 API Key 即可访问
 
 # About 弹窗
 about: 关于
@@ -563,10 +685,12 @@ catInput: 数据
 catDisplay: 显示
 catMath: 算术
 catCustom: 自定义
+catString: 字符串
 catInputHelp: 数据类控件用于设置参数或发送命令, 可连线到 Command 的 value 端口做模板插值
 catDisplayHelp: 显示控件用于实时展示通道数据, 拖入后从通道源连线接入
 catMathHelp: 算术控件对多通道做四则运算或数学函数, 可级联组合
 catCustomHelp: 自定义 JS 控件, 点击打开编辑器编写自己的逻辑
+catStringHelp: 字符串控件对字符串做转换或查询; len/find/contains 输出数值, 其余输出字符串
 
 # 算术控件
 mathAdd: 加法
@@ -586,6 +710,59 @@ mathTan: 正切
 mathLog: 对数
 mathUnary: 单目
 mathBinary: 双目
+
+# 字符串控件
+strLen: 长度
+strLenDesc: 输入字符串的字符数 (输出数值)
+strFind: 查找
+strFindDesc: 子串的 1-based 字符位置, 未命中返回 0 (输出数值)
+strContains: 包含
+strContainsDesc: 输入包含子串输出 1, 否则输出 0 (输出数值)
+strLeft: 左截取
+strLeftDesc: 取左侧 size 个字符; size=0 为整串
+strRight: 右截取
+strRightDesc: 取右侧 size 个字符; size=0 为整串
+strMid: 截取
+strMidDesc: 从 pos (1-based) 截取 len 个字符; len=0 到末尾
+strConcat: 拼接
+strConcatDesc: 拼接 str1 + str2
+strInsert: 插入
+strInsertDesc: 在 pos (1-based) 处插入 str2
+strDelete: 删除
+strDeleteDesc: 从 pos 删除 len 个字符; len=0 删到末尾
+strReplace: 替换
+strReplaceDesc: 从 pos 起将 len 个字符替换为 str2
+strUpper: 转大写
+strUpperDesc: 转为大写字母
+strLower: 转小写
+strLowerDesc: 转为小写字母
+strTrim: 去空白
+strTrimDesc: 去除首尾空白字符
+strReverse: 反转
+strReverseDesc: 按字符反转字符串
+strFormat: 格式化
+strFormatDesc: 按模板格式化数值 ({N} 引用第 N 路, {N:.2} 定精度)
+strParse: 解析数值
+strParseDesc: 从文本扫描首个数字 (十进制 / 0x 十六进制), 未命中返回 0
+strEncodeHex: HEX 编码
+strEncodeHexDesc: UTF-8 字节的大写 HEX 文本
+strTmpl: 模板
+textOut: 文本下发
+textOutDesc: 把图内文本写回目标传输口 (动态发送回传, 限速)
+textOutTarget: 目标传输
+textOutNoTarget: 请选择目标传输
+textOutNewline: 换行后缀
+textOutNlNone: 无换行
+textOutNlLf: LF (\n)
+textOutNlCrlf: CRLF (\r\n)
+textOutNlCr: CR (\r)
+textOutInterval: 最小发送间隔 (ms)
+textOutSendNow: 立即发送
+rawDataNoInputTitle: 未连接输入
+rawDataNoInputHint: 拖一条源端口连线到本卡片，即可查看对应字节流
+strPortPos: 位置 (从 1 起)
+strPortLen: 长度 (0 = 到末尾)
+strPortSize: 字数 (0 = 全部)
 
 # 滤波器与频谱控件
 filter: 滤波器
@@ -623,18 +800,30 @@ windowHamming: 汉明
 windowBlackman: 布莱克曼
 domainTime: 时域
 domainFreq: 频域
+domainString: 字符串
 domainMismatchTitle: 域不匹配
-domainMismatchMsg: 不同域的端口不能直连 (时域 / 频域 / 字节域两两互斥)
+domainMismatchMsg: 不同域的端口不能直连 (时域 / 频域 / 字节域 / 字符串域两两互斥)
+connectionRejectedTitle: 无法连接
 
 # 3D 模型控件
 model3d: 3D 模型
 model3dSettings: 3D 设置
 model3dMode: 模式
+model3dAttitudeInput: 姿态输入
+model3dAttitudeDegrees: 角度 (°)
+model3dAttitudeRadians: 弧度 (rad)
+model3dAttitudeQuaternion: 四元数
 model3dTrajectory: 轨迹
 model3dAttitude: 姿态
+model3dTrajectoryAttitude: 轨迹 + 姿态
 model3dTrailLength: 拖尾长度
 model3dColor: 颜色
 model3dAxisLength: 坐标轴长度
+model3dModel: 模型
+model3dModelBuiltin: 内置立方体
+model3dPickModel: 导入 GLB/GLTF…
+model3dResetModel: 恢复内置
+model3dModelLoadError: 模型加载失败
 
 # 命令发送控件
 command: 命令发送
@@ -767,33 +956,51 @@ tourPrev: 上一步
 tourSkip: 跳过
 tourFinish: 完成
 tourWelcomeTitle: 欢迎使用 Vofa Next
-tourWelcomeContent: 本引导将带你快速熟悉核心操作。高亮区域是当前要介绍的功能，点击“下一步”继续；随时可点击右上角跳过。
-tourTransportTitle: 数据接口
-tourTransportContent: 从这里选择串口、CAN、UDP/TCP 或测试数据，并配置端口、波特率等参数。配置好后点击“连接”。
-tourProtocolTitle: 协议引擎
-tourProtocolContent: 根据设备选择解析协议：JustFloat / FireWater 用于通用波形，Slcan / CandleLight 用于 CAN 总线，LogicDecode 用于逻辑分析仪，RawData 仅显示原始字节。
-tourWidgetsTitle: 控件面板
-tourWidgetsContent: 拖拽旋钮、按钮、波形图、仪表盘等控件到上方画布，构建你的交互界面。控件之间可以连线传递数据。
-tourConnectTitle: 连接设备
-tourConnectContent: 参数配置完成后，点击这里的“连接”按钮开始接收数据。连接状态会在底部状态栏显示。
-tourDataTitle: 数据显示区
-tourDataContent: 底部会显示波形、原始数据、CAN 帧、逻辑分析仪等 Tab。点击右侧的 CPU / 电路板图标可新增 CAN 或逻辑分析仪页面。
-tourWindowOrganizeTitle: 多窗口组织
-tourWindowOrganizeContent: 拖动 Tab 到其他窗口的标题栏可合并为一组；拖动 Tab 或标题栏空白处到窗口边缘，可拆分为并排窗口；拖到页面四边可停靠为整行/整列。
-tourWindowResizeTitle: 窗口调整
-tourWindowResizeContent: 拖动窗口之间的分隔条可调整大小；双击控件 Tab 可重命名，右键 Tab 可关闭或关闭其他 Tab。窗口布局会自动保存，下次打开保持不变。
-tourHelpTitle: 帮助中心
-tourHelpContent: 任何时候点击左下角的帮助图标，都可以重新打开帮助中心或本引导。你也能在设置中关闭使用引导。
+tourWelcomeContent: 三分钟跑通核心工作流。高亮区是当前讲解对象，<strong>带勾选框的步骤需要动手完成</strong>；右上角 × 随时退出。
+tourQuickStartTitle: 快速开始 · 模板起步
+tourQuickStartContent: 左侧活动栏的<strong>火箭图标</strong>打开此面板——7 个模板一键生成画布与连线，应用后默认落在<strong>编译结果</strong>页核对。
+tourPaletteTitle: 控件面板 · 素材总览
+tourPaletteContent: 全部素材分<strong>九大分组</strong>——输入、接口、协议、显示、算术、滤波、频域、字符串、自定义。分组头可折叠展开。
+tourJumpbarTitle: 控件面板 · 跳转与搜索
+tourJumpbarContent: 图标条<strong>点击直达分组</strong>（自动展开已折叠项）；下方搜索框按名称即时过滤控件。
+tourActJumpbar: 点击跳转条上任一分类图标
+tourCreateTitle: 新建卡片 · 放进画布
+tourCreateContent: <strong>拖拽</strong>任意行到画布松手落位，或单击该行快速添加；接口与协议节点为全局共享。
+tourActCreate: 从左侧拖一个控件进画布（或单击行添加）
+tourConnectTitle: 连接边 · 数据流
+tourConnectContent: 节点左侧点＝输入、右侧点＝输出，<strong>同色同域才能相连</strong>，合法目标会变绿放大。
+tourActConnect: 把右侧输出点连到某个左侧输入点
+tourDeleteCardTitle: 删除卡片
+tourDeleteCardContent: 悬停头部点 <strong>×</strong>，或选中后按 <strong>Backspace</strong>；关窗≠删卡，双击节点可重开窗口。
+tourActDeleteCard: 用任一方式删除一个节点
+tourCompileErrorsTitle: 编译报错 · 自动定位
+tourCompileErrorsContent: 编辑即时触发后端编译。状态栏红三角一键打开本面板，<strong>定位按钮</strong>飞至红框节点，悬停可见具体原因。
+tourResultsTitle: 编译结果 · 管理连接
+tourResultsContent: 后端 HIR 权威连接表——增/删/改/复制粘贴皆可，点击节点名可在画布中蓝色高亮对应节点。
+tourActDeleteEdge: 点行尾垃圾桶删除一条连接
+tourHistoryTitle: 操作历史 · 撤销与回溯
+tourHistoryContent: 每次编辑都会记录于此——<strong>点击任意一条直接回到那个时刻</strong>，或用顶部按钮 / Ctrl+Z、Ctrl+Y 逐步撤销重做。
+tourActHistory: 点击历史列表里任意一条（或点顶部撤销按钮）
+tourDataTabsTitle: 数据窗口 · 自由布局
+tourDataTabsContent: 波形/CAN/逻辑/编译等窗口以 Tab 共存。<strong>拖 Tab 合并或拆分窗口</strong>，拖分隔条调宽窄，右键可关闭。
+tourCanTitle: CAN 帧 · 总线分析
+tourCanContent: 已为你自动打开视图。切到 Slcan/CandleLight 协议+硬件即可看真实总线，<strong>顶部提示条</strong>可一键设置协议。
+tourActCanTab: 点击底部任一子页签切换视图
+tourAiTitle: AI 助手 · 对话即操作
+tourAiContent: 状态栏右侧的 AI 图标随时开关此面板（可停靠左/右/下或拖成浮动）。在 设置 → AI 配好服务商与 API Key 后，<strong>AI 可直接搭建节点图、读取波形与 CAN 数据、向设备发送命令</strong>；标题栏的 MCP 抽屉可接入外部工具，本机 127.0.0.1:8765/mcp 也可供 Claude Desktop 等外部 AI 客户端控制本软件。
+tourHelpTitle: 帮助中心 · 随时回来
+tourHelpContent: 问号图标随时回到本中心或重放引导；设置里可关闭首启引导与上下文提示条。
+tourNoEdgeSkip: 跳过
 
 # 帮助中心章节
 helpCenterQuickStart: 快速入门
-helpCenterQuickStartDesc: 从连接到查看数据，只需几个步骤。
+helpCenterQuickStartDesc: 从模板起步，几分钟跑通第一条数据通路。
 helpCenterQuickStartSteps: |-
-  在左侧“数据接口”选择串口/CAN/UDP/TCP 或测试数据，配置参数后点击连接
-  在“协议引擎”选择与设备匹配的协议（如 JustFloat / FireWater / CAN / LogicDecode）
-  在“控件面板”拖拽控件到画布，自动从通道源或上游控件连线
-  底部“数据”区会显示波形、原始数据、CAN 帧、逻辑分析仪等 Tab
-  点击左下角帮助图标可随时查看本帮助中心
+  点击左侧活动栏的火箭图标打开「快速开始」，选择一个内置模板（推荐 CAN 或串口）并应用
+  应用后默认停在「编译结果」页——先核对生成的连线，每行都是一条真实生效的边
+  回到画布：从控件面板拖入新控件、连接端口，继续扩展你的数据流
+  底部状态栏实时显示连接与编译状态；出现红色三角点击即可进入「编译错误」面板定位问题
+  左下角问号图标随时可回到本帮助中心，或重放新手引导
 helpTransport: 数据接口
 helpTransportDesc: 配置设备与上位机之间的物理连接。
 helpTransportSteps: |-
@@ -809,21 +1016,30 @@ helpProtocolSteps: |-
   Slcan / CandleLight：CAN 协议，解析为 CAN 帧并在 CAN Tab 显示
   LogicDecode：逻辑分析仪协议，采集数字通道并支持协议解码
 helpWidgets: 控件与节点编辑器
-helpWidgetsDesc: 通过拖拽和连线构建数据流。
+helpWidgetsDesc: 九大分组素材库，拖拽放卡、端口连线搭建数据流。
 helpWidgetsSteps: |-
-  从左侧“控件面板”拖拽控件（旋钮、按钮、仪表盘、波形图等）到上方画布
-  每个控件即一个节点，可连接“通道源”或其他控件的输入/输出
-  双击或右键控件可修改参数、标签、绑定关系
-  使用 Knob/Slider/Button 等输入控件可向设备发送数据
-  Waveform/PieChart/Spectrum 等显示控件会自动创建底部数据 Tab
+  「控件面板」按九大分组收纳全部素材——输入控件 / 数据接口 / 协议引擎 / 显示 / 算术 / 滤波器 / 频域 / 字符串处理 / 自定义 JS 控件
+  顶部跳转条点击直达分组（自动展开折叠项），搜索框按名称即时过滤，分组头可折叠/展开
+  把任意一行拖进画布放置节点（落点即位置），或单击该行快速添加
+  按住右侧输出圆点拖到目标左侧输入圆点建立连线；只有同色（同域）端口可以相连，跨域会被弹窗拦截
+  删除节点：悬停头部点 ×，或选中后按 Backspace；关闭数据窗口不等于删节点，双击画布节点可重新打开它的窗口
+helpCompile: 编译反馈：错误与结果
+helpCompileDesc: 每次编辑即时重编译；错误自动高亮定位，结果表可直接增删改连接。
+helpCompileSteps: |-
+  底部状态栏常驻编译指示灯——转圈表示编译中、绿勾表示通过、红三角加计数表示出错，点击红三角直接打开「编译错误」面板
+  「编译错误」面板每个条目对应一个出错节点：点击定位按钮飞回画布，节点以红框标出，悬停红框可见具体原因（如信号域不匹配）
+  面板右上角的刷新按钮触发全量手动重编译；错误修复前条目持续保留，便于逐一处理
+  「编译结果」是固定标签页，展示后端 HIR 权威连接表：每行一条真实生效的边，标注源/目标端点与两侧数据域
+  结果表内可对连接做全生命周期操作：「添加连接」「粘贴连接」、行内编辑、复制与垃圾桶删除——删除会同步移除画布上的边并立即重编译
+  点击行内的节点名会聚焦对应画布卡片并将节点蓝色高亮，再点一次取消高亮
 helpCan: CAN 帧分析
 helpCanDesc: 接收、过滤、发送和分析 CAN 总线数据。
 helpCanSteps: |-
-  协议引擎需设置为 Slcan 或 CandleLight 并连接硬件
-  点击底部“+”添加 CAN 帧 Tab，或在顶部菜单打开
-  在“帧列表”查看实时 CAN 帧，支持按 ID / 方向过滤、选中复制、导出 CSV
-  在“CAN 发送器”手动构造帧并发送
-  在“总线活动”查看各 ID 的收发统计
+  入口：左侧活动栏「面板」→独立面板→CAN 帧；菜单栏的面板菜单同样可打开
+  底部页签切换四个子视图——帧列表 / 发送器 / 总线活动 / 负载分析
+  协议引擎需设为 Slcan 或 CandleLight 并连接硬件；协议不符时顶部提示条可一键跳转设置
+  「帧列表」支持按 ID / 方向过滤、选中复制、导出 CSV
+  「发送器」手动构造帧并发送；「总线活动」查看各 ID 收发统计；「负载分析」评估总线占用率
 helpLogic: 逻辑分析仪
 helpLogicDesc: 采集多路数字信号并查看时序与解码事件。
 helpLogicSteps: |-
@@ -857,6 +1073,14 @@ helpWindowResizeSteps: |-
   右键 Tab 可关闭当前 Tab、关闭其他 Tab；控件画布 Tab 还支持复制
   右键标题栏空白处可新建控件 Tab 或添加 CAN / 逻辑分析仪页面
   窗口布局（拆分方式与大小）会自动持久化，重启应用后保持不变
+helpAi: AI 助手
+helpAiDesc: 内置 AI 对话可直接操作软件、读取数据；本应用也可作为 MCP 服务交给外部 AI 客户端控制。
+helpAiSteps: |-
+  在 设置 → AI 选择模型服务商并填写 API Key——默认 OrcaRouter 聚合网关，模型名需带厂商前缀（如 openai/gpt-4o-mini）；密钥只存系统钥匙串，不写入设置文件
+  点击状态栏右侧的 AI 图标打开「AI 对话」面板——可停靠在左/右/下或拖成浮动窗口，标题栏管理多会话
+  设置中开启「内置工具」后，AI 能直接搭建与修改节点图、读取波形/CAN/原始数据、向设备发送数据，并可查询内置使用知识库
+  面板标题栏的「MCP 服务器」抽屉可添加外部 MCP server（stdio 命令或 http 地址），其工具随即提供给模型调用
+  本应用同时在 127.0.0.1:8765/mcp 提供 MCP 服务（仅监听本机回环，端口可在设置中修改），Claude Desktop 等外部客户端接入后即可控制本软件
 
 # CAN
 canFrames: CAN 帧
@@ -879,8 +1103,98 @@ canBitrate: CAN 波特率
 serialPort: 串口路径
 candleDevice: USB 设备
 noCandleDevices: 未发现设备
+# Compile Errors Panel
+compileErrorsTitle: 编译错误
+compileErrors: 编译错误面板
+noCompileErrors: 当前没有编译错误
+flyToNode: 定位节点
+addCompileErrorsTab: 添加编译错误 Tab
+tabRepaired: 此 Tab 已修复, 但面板保留历史记录
+compileErrorNodes: "{{count}} 个节点"
+compileErrorTabs: "{{count}} 个 Tab"
+compileErrorValueCycle: 值信号环路
+compileErrorByteCycle: 字节信号环路
+compileErrorDomainMismatch: 信号域不匹配
+compileErrorNodeNotFound: 未找到节点
 slcanDesc: 通过 slcan ASCII 协议与 CANable 设备通信 (串口转 CAN)
 candleLightDesc: 通过 candleLight 二进制协议与 CANable 设备通信 (原生 USB)
+
+# Compile Results Panel (编译结果面板)
+connectionResultsTitle: 连接结果
+colEdgeClass: 边分类
+colSourceDomain: 源端口域
+colTargetDomain: 目标端口域
+colDualRole: 双角色
+toggleEdgeClass: 显示边分类
+toggleSourceDomain: 显示源端口域
+toggleTargetDomain: 显示目标端口域
+toggleDualRole: 显示双角色
+dualRoleMarker: 双角色
+modalAddEdge: 添加连接
+modalModifyEdge: 编辑连接
+fieldSourceNode: 源节点
+fieldTargetNode: 目标节点
+fieldSourceHandle: 源端口
+fieldTargetHandle: 目标端口
+confirmAdd: 确认
+cancel: 取消
+
+# Data Panel Menu (菜单 — 数据面板)
+menuPanel: 数据面板
+menuPanelOpenCompileErrors: 打开编译错误
+menuPanelOpenCompileResults: 打开编译结果
+menuPanelOpenCan: 打开 CAN 帧
+menuPanelOpenLogic: 打开逻辑分析仪
+panelOpenSection: 打开数据面板
+panelOpenNoWidget: "画布无对应控件"
+dataPanelsStandaloneTitle: 独立面板
+dataPanelsDerivedTitle: 派生面板
+dataTabWaveform: 波形
+dataTabSpectrum: 频谱
+dataTabRawData: 原始数据
+dataTabPie: 饼图
+dataTabImage: 图像
+dataTabModel3d: 3D 模型
+dataTabCommand: 命令发送
+dataTabFrameDecoder: 帧解码
+dataTabTrigger: 触发器
+menuPanelOpenOperationHistory: 打开操作历史
+operationHistoryTitle: 操作历史
+opHistoryInitial: 初始状态
+opHistoryEmpty: 暂无操作记录。
+opHistoryClear: 清空历史
+opHistoryClearConfirm: 确认清空？
+opHistoryRedoZone: 已撤销 · 可重做
+opHistoryCurrentPosition: 当前位置
+opAddWidget: 添加控件
+opRemoveWidget: 删除控件
+opUpdateWidgetParams: 调整控件参数
+opConnectNodes: 添加连线
+opDeleteEdges: 删除连线
+opMoveNodes: 移动节点
+opRemoveNodes: 删除节点
+opAddTransportNode: 添加传输节点
+opAddProtocolNode: 添加协议节点
+opRemoveGlobalNode: 删除全局节点
+opUpdateTransportConfig: 修改传输配置
+opUpdateProtocolConfig: 修改协议配置
+opConvertProtocolTo: 协议转换
+opUpdateProtocolSchema: 编辑帧 Schema
+opAddControlTab: 新建控制页签
+opRemoveControlTab: 删除控制页签
+opRenameControlTab: 重命名页签
+opImportWorkspace: 导入工作区
+opApplyTemplate: 应用模板
+addConnection: 添加
+pasteConnection: 粘贴
+colSource: 源
+colTarget: 目标
+colActions: 操作
+noConnections: 未找到连接。
+defaultHandle: 默认
+editConnection: 编辑
+nodeTypeTransport: 传输
+nodeTypeProtocol: 协议
 
 # CAN 负载分析
 canLoadAnalysis: 负载分析
@@ -915,6 +1229,10 @@ canLoadExportSuccess: 已导出
 
 # 帧解码器 (FrameDecoder)
 frameDecoder: 帧解码器
+trigger: 触发器
+paletteSearchPlaceholder: 搜索控件…
+paletteNoResults: 无匹配控件
+paletteClearSearch: 清空
 fdModeLive: 实时模式
 fdModeManual: 手动测试
 fdSettings: 全局设置
@@ -954,6 +1272,55 @@ fdBitOffset: 位偏移
 fdBitLength: 位长度
 fdSigned: 是否带符号
 fdSignedYes: 带符号
+
+# 触发器 (Trigger)
+triggerTitle: 触发器
+triggerModeManual: 手动
+triggerModeAuto: 自动
+triggerEdge: 边沿
+triggerEdgeLevel: 电平
+triggerEdgeRising: 上升沿
+triggerMatchExact: 精确
+triggerMatchPrefix: 前缀
+triggerMatchContains: 包含
+triggerMatchRegex: 正则
+triggerMatchRange: 范围
+triggerHintExact: 字符串完全相等
+triggerHintPrefix: 命令以模式开头
+triggerHintContains: 命令包含模式
+triggerHintRegex: JavaScript/PCRE 风格正则, 支持 flags (i/m/s/U)
+triggerHintRange: 数值范围 min..max, 支持 Infinity
+triggerMatchType: 匹配类型
+triggerPattern: 命令模板
+triggerOutputValue: 输出值
+triggerFlags: 正则 flags
+triggerFlagsHint: 如 i (忽略大小写) / im / ims
+triggerEnabled: 启用
+triggerRulesCount: 条规则
+triggerRulesEmpty: 暂无规则, 点击下方按钮添加
+triggerAddRule: 添加规则
+triggerManualInput: 手动输入命令
+triggerAutoInput: 自动触发
+triggerShortcutHint: 按 Ctrl/Cmd + Enter 立即触发
+triggerCmdPlaceholder: "输入待匹配命令, 例如: GET_TEMP"
+triggerFire: 触发 (Fire)
+triggerPort: 上游 trigger
+triggerCommand: 当前命令
+triggerMatchResult: 匹配结果
+triggerLastResult: 最近匹配
+triggerMatched: 是否命中
+triggerValue: 输出值
+triggerMissValue: 未命中值
+triggerGlobalSettings: 全局设置
+triggerOutputType: 输出类型
+triggerOutputNumber: 数字
+triggerOutputString: 字符串
+triggerOutputText: 输出文本
+triggerMissText: 默认未命中文本
+triggerMatchGlob: Glob
+triggerHintGlob: 标准 shell glob 模式, 支持 * ? [abc] {a,b,c}
+textDisplay: 文本显示
+textInput: 文本框
 fdSignedNo: 无符号
 fdChecksumCover: 校验范围
 fdCoverStart: 起始字节
@@ -974,6 +1341,14 @@ fdAddBlockField: 添加字段
 fdAddBlockBitfield: 添加位域
 fdAddBlockChecksum: 添加校验
 fdAddBlockTail: 添加帧尾
+fdBlockCsv: CSV
+fdBlockAsciiField: ASCII字段
+fdBlockSamples: 采样
+fdAddBlockCsv: 添加CSV
+fdAddBlockAsciiField: 添加ASCII字段
+fdAddBlockSamples: 添加采样
+fdCsvSeparator: 分隔符
+fdCsvPorts: 端口列表
 fdChecksumPosAppend: 末尾
 fdChecksumPosInline: 行内
 fdChecksumPosPrepend: 开头
@@ -1029,6 +1404,14 @@ cmdSendModeOnChange: 值变化发送
 cmdSendModeTimer: 定时发送
 cmdSendModeInterval: 定时间隔 (ms)
 
+# 帧列表 (一个发送器多个帧)
+cmdFrames: 帧
+cmdAddFrame: 新增帧
+cmdRemoveFrame: 删除帧
+cmdRenameFrameHint: 双击改名
+cmdNewFrame: 帧
+cmdFrameSettings: 帧设置
+
 # 布局编排 (模块拖拽重排)
 dragToRearrange: 拖动到其他模块边缘以重新排列
 dragToDock: 拖动到窗口左/右边缘以切换停靠侧
@@ -1040,6 +1423,7 @@ closeHintGotIt: 知道了
 nodeOpenWindowHint: 双击打开窗口
 domainBytes: 字节域
 convertTo: 协议转换 (convert_to)
+convertRawDataHint: RawData 不产帧 — convert_to 不生效，原始字节仍从 out 口透传
 convertNone: 无转换
 cmdNoByteRoute: 未连接字节路由 — 请将 loopbackOut 端口连到 Transport.tx 或 FrameDecoder.in
 noTransportNode: 无数据接口节点 — 请先从控件面板拖入「数据接口」

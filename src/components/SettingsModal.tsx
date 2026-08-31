@@ -6,7 +6,7 @@
 //! - 底部 Reset / Done 按钮
 //! - ESC 关闭, 点击遮罩关闭
 
-import { useEffect, useMemo, useRef, useState, useActionState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, useActionState } from 'react';
 import {
   X,
   Search,
@@ -24,7 +24,11 @@ import {
   Download,
   Upload,
   RefreshCw,
+  Sparkles,
+  ExternalLink,
 } from 'lucide-react';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { ORCAROUTER_OFFERS_URL, ORCAROUTER_REFERRAL_URL } from '../settings/defaults';
 import { getVersion } from '@tauri-apps/api/app';
 import { useSettingsStore } from '../store/settingsStore';
 import { useAppStore } from '../store/appStore';
@@ -33,11 +37,12 @@ import type { Lang } from '../i18n';
 import type { AppSettings } from '../settings/defaults';
 import { ThemeEditor } from './ThemeEditor';
 import { BUILT_IN_THEMES, type ThemeDefinition } from '../settings/theme';
-import { SettingFieldDef, SETTING_FIELDS } from './settingFields';
+import type { SettingFieldDef} from './settingFields';
+import { SETTING_FIELDS } from './settingFields';
 import { exportAppToFile, importAppFromFile } from '../lib/tauri/appExport';
 import { formatError } from '../lib/tauri/notifications';
 import { BackupModal } from './BackupModal';
-import { useUpdater } from '../lib/hooks/useUpdater';
+import { useUpdateStore, type UpdateChannel } from '../store/updateStore';
 
 const CATEGORY_ICONS: Record<keyof AppSettings, React.ReactNode> = {
   general: <SettingsIcon size={16} />,
@@ -47,6 +52,7 @@ const CATEGORY_ICONS: Record<keyof AppSettings, React.ReactNode> = {
   serial: <Usb size={16} />,
   notifications: <Bell size={16} />,
   performance: <Gauge size={16} />,
+  ai: <Sparkles size={16} />,
 };
 
 const CATEGORY_LABEL_KEY: Record<keyof AppSettings, string> = {
@@ -57,6 +63,7 @@ const CATEGORY_LABEL_KEY: Record<keyof AppSettings, string> = {
   serial: 'settingsSerial',
   notifications: 'settingsNotifications',
   performance: 'settingsPerformance',
+  ai: 'settingsAi',
 };
 
 export function SettingsModal() {
@@ -74,8 +81,19 @@ export function SettingsModal() {
   const resetCategory = useSettingsStore((s) => s.resetCategory);
   const [themeEditorOpen, setThemeEditorOpen] = useState(false);
   const [backupModalOpen, setBackupModalOpen] = useState(false);
-  const { state: updateState, checkUpdate, install, restart } = useUpdater();
   const [appVersion, setAppVersion] = useState('');
+  /// 更新状态 — 与状态栏/更新弹窗共享 updateStore
+  const updateStatus = useUpdateStore((s) => s.status);
+  const updateInfo = useUpdateStore((s) => s.updateInfo);
+  const updateProgress = useUpdateStore((s) => s.progress);
+  const updateError = useUpdateStore((s) => s.error);
+  const checkForUpdate = useUpdateStore((s) => s.check);
+  const downloadAndInstall = useUpdateStore((s) => s.downloadAndInstall);
+  const relaunchApp = useUpdateStore((s) => s.relaunch);
+  const setUpdateChannel = useUpdateStore((s) => s.setChannel);
+  const updateChannel = useSettingsStore((s) => s.settings.general.updateChannel);
+  /// 待确认的通道切换 (非空时显示确认框)
+  const [pendingChannel, setPendingChannel] = useState<UpdateChannel | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -154,22 +172,26 @@ export function SettingsModal() {
   if (!isOpen) return null;
 
   // 更新按钮行为与状态文案
-  const updateBusy = updateState.status === 'checking' || updateState.status === 'downloading';
+  const updateBusy = updateStatus === 'checking' || updateStatus === 'downloading';
   const updateLabel =
-    updateState.status === 'checking'
+    updateStatus === 'checking'
       ? t(lang, 'updateChecking')
-      : updateState.status === 'available'
-        ? `${t(lang, 'updateDownload')} v${updateState.version}`
-        : updateState.status === 'downloading'
-          ? `${t(lang, 'updateDownloading')} ${updateState.percent}%`
-          : updateState.status === 'ready'
+      : updateStatus === 'available' && updateInfo
+        ? `${t(lang, 'updateDownload')} v${updateInfo.version}`
+        : updateStatus === 'downloading'
+          ? `${t(lang, 'updateDownloading')} ${updateProgress}%`
+          : updateStatus === 'ready'
             ? t(lang, 'updateRelaunch')
             : t(lang, 'updateCheck');
   const handleUpdateClick = () => {
-    if (updateState.status === 'ready') void restart();
-    else if (updateState.status === 'available') void install();
-    else if (!updateBusy) void checkUpdate();
+    if (updateStatus === 'ready') void relaunchApp();
+    else if (updateStatus === 'available') void downloadAndInstall();
+    else if (!updateBusy) void checkForUpdate('manual');
   };
+
+  // 更新通道显示值 — 未显式设置时按当前版本推导 (含 '-' 视为预发布)
+  const effectiveChannel: UpdateChannel =
+    updateChannel ?? (appVersion.includes('-') ? 'beta' : 'stable');
 
   // 渲染单个控件
   const renderControl = (def: SettingFieldDef) => {
@@ -383,23 +405,39 @@ export function SettingsModal() {
                 <RefreshCw size={14} className={updateBusy ? 'animate-spin' : ''} />
                 <span>{updateLabel}</span>
               </button>
-              {updateState.status === 'downloading' && (
+              <div className="flex items-center justify-between gap-2 py-1.5">
+                <span className="text-xs text-text-secondary" title={t(lang, 'updateChannelDesc')}>
+                  {t(lang, 'updateChannel')}
+                </span>
+                <select
+                  className="px-2 py-0.5 bg-bg-input text-text-primary border border-border rounded text-xs focus:outline-none focus:border-accent transition-colors cursor-pointer"
+                  value={effectiveChannel}
+                  onChange={(e) => {
+                    const next = e.target.value as UpdateChannel;
+                    if (next !== effectiveChannel) setPendingChannel(next);
+                  }}
+                >
+                  <option value="stable">{t(lang, 'updateChannelStable')}</option>
+                  <option value="beta">{t(lang, 'updateChannelBeta')}</option>
+                </select>
+              </div>
+              {updateStatus === 'downloading' && (
                 <div className="h-1 rounded-full bg-bg-hover overflow-hidden mb-1">
                   <div
                     className="h-full bg-accent transition-all duration-200"
-                    style={{ width: `${updateState.percent}%` }}
+                    style={{ width: `${updateProgress}%` }}
                   />
                 </div>
               )}
-              {updateState.status === 'up-to-date' && (
+              {updateStatus === 'up-to-date' && (
                 <div className="text-xs text-text-secondary pb-1">{t(lang, 'updateUpToDate')}</div>
               )}
-              {updateState.status === 'ready' && (
+              {updateStatus === 'ready' && (
                 <div className="text-xs text-text-secondary pb-1">{t(lang, 'updateReady')}</div>
               )}
-              {updateState.status === 'error' && (
+              {updateStatus === 'error' && updateError && (
                 <div className="text-xs text-red-400 pb-1 break-all">
-                  {t(lang, 'updateError')}: {updateState.message}
+                  {t(lang, 'updateError')}: {updateError}
                 </div>
               )}
             </div>
@@ -426,13 +464,43 @@ export function SettingsModal() {
                     </div>
                   )}
                   {fields.map((def) => (
-                    <div key={`${def.category}-${def.field}`} className="flex items-start justify-between gap-6 py-2.5 border-b border-border last:border-b-0">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm text-text-primary mb-0.5">{t(lang, def.labelKey)}</div>
-                        <div className="text-xs text-text-secondary leading-relaxed">{t(lang, def.descKey)}</div>
+                    <Fragment key={`${def.category}-${def.field}`}>
+                      <div className="flex items-start justify-between gap-6 py-2.5 border-b border-border last:border-b-0">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm text-text-primary mb-0.5">{t(lang, def.labelKey)}</div>
+                          <div className="text-xs text-text-secondary leading-relaxed">{t(lang, def.descKey)}</div>
+                        </div>
+                        <div className="flex-shrink-0 min-w-[200px] flex items-center justify-end">{renderControl(def)}</div>
                       </div>
-                      <div className="flex-shrink-0 min-w-[200px] flex items-center justify-end">{renderControl(def)}</div>
-                    </div>
+                      {/* OrcaRouter 重点提示: 命名空间模型名 + 推广链接获取 API Key + 免费模型入口 */}
+                      {cat === 'ai' && def.field === 'apiKey' && settings.ai.adapter === 'orcarouter' && (
+                        <div className="my-2 px-3 py-2 rounded border border-accent/25 bg-accent/5 space-y-1.5">
+                          <div className="flex items-center gap-2">
+                            <span className="flex-1 min-w-0 text-xs text-text-secondary leading-relaxed">
+                              {t(lang, 'settingAiOrcaHint')}
+                            </span>
+                            <button
+                              className="flex-shrink-0 px-2 py-1 rounded bg-accent text-accent-foreground text-xs flex items-center gap-1"
+                              onClick={() => void openUrl(ORCAROUTER_REFERRAL_URL)}
+                            >
+                              <ExternalLink size={11} />
+                              {t(lang, 'settingAiOrcaGetKey')}
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-xs text-text-secondary leading-relaxed">
+                            <Sparkles size={11} className="flex-shrink-0 text-accent" />
+                            <span className="flex-shrink-0">{t(lang, 'settingAiOrcaFreeModels')}</span>
+                            <button
+                              className="text-accent hover:text-accent-hover hover:underline truncate text-left"
+                              onClick={() => void openUrl(ORCAROUTER_OFFERS_URL)}
+                              title={ORCAROUTER_OFFERS_URL}
+                            >
+                              {ORCAROUTER_OFFERS_URL}
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </Fragment>
                   ))}
                 </div>
               );
@@ -510,6 +578,48 @@ export function SettingsModal() {
         }
       />
       <BackupModal isOpen={backupModalOpen} onClose={() => setBackupModalOpen(false)} />
+      {/* 更新通道切换确认 — select 为受控值, 取消即自动回原值 */}
+      {pendingChannel && (
+        <div
+          className="fixed inset-0 bg-bg-overlay z-[9500] flex items-center justify-center animate-[settings-fade-in_0.15s_ease-out]"
+          onClick={(e) => {
+            // 阻止冒泡到设置弹窗遮罩 (避免整个设置弹窗被关闭)
+            e.stopPropagation();
+            setPendingChannel(null);
+          }}
+        >
+          <div
+            className="w-[360px] max-w-[90vw] bg-bg-sidebar border border-border rounded-lg shadow-modal p-5 flex flex-col gap-3 animate-[settings-slide-in_0.2s_ease-out]"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="text-sm font-semibold text-text-bright">
+              {t(lang, 'updateChannelConfirmTitle')}
+            </div>
+            <div className="text-xs text-text-secondary leading-relaxed">
+              {t(lang, pendingChannel === 'beta' ? 'updateChannelToBetaMsg' : 'updateChannelToStableMsg')}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                className="bg-transparent text-text-primary border border-border px-2.5 py-1 text-xs cursor-pointer rounded transition-all hover:bg-bg-hover hover:border-accent hover:text-text-bright"
+                onClick={() => setPendingChannel(null)}
+              >
+                {t(lang, 'updateCancel')}
+              </button>
+              <button
+                className="px-3 py-1 bg-bg-button text-text-inverse border-none rounded cursor-pointer text-xs transition-colors hover:bg-bg-button-hover"
+                onClick={() => {
+                  setUpdateChannel(pendingChannel);
+                  setPendingChannel(null);
+                }}
+              >
+                {t(lang, 'updateConfirm')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

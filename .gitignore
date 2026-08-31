@@ -21,6 +21,9 @@ dist-ssr
 .codewhale
 .sisyphus
 .DS_Store
+.serena
+.claude
+.zcode
 *.suo
 *.ntvs*
 *.njsproj

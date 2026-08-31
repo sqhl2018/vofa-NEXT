@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import type { WidgetConfig, WindowType, SpectrumOutput } from '../../types';
+import type { Model3DConfig, WidgetConfig, WindowType, SpectrumOutput } from '../../types';
 
 /// Custom widget 编辑器默认代码 (与 CustomWidgetEditor 中常量保持一致)
 export const DEFAULT_CUSTOM_CODE = `({
@@ -151,8 +151,8 @@ export function createWidget(kind: WidgetConfig['kind']): WidgetConfig {
           id,
           label: 'FFT',
           windowSize: 512,
-          windowType: 'Hann' as WindowType,
-          output: 'Magnitude' as SpectrumOutput,
+          windowType: 'Hann',
+          output: 'Magnitude',
           sampleRate: 1000,
         },
       };
@@ -180,9 +180,11 @@ export function createWidget(kind: WidgetConfig['kind']): WidgetConfig {
           id,
           label: 'Model3D',
           mode: 'trajectory',
+          attitudeInputMode: 'radians',
           trailLength: 200,
           color: '#75beff',
           axisLength: 1.0,
+          modelSource: { kind: 'builtin-cube' },
         },
       };
     case 'Command':
@@ -191,15 +193,21 @@ export function createWidget(kind: WidgetConfig['kind']): WidgetConfig {
         params: {
           id,
           label: 'Command',
-          blocks: [
-            { id: 'b1', type: 'const_hex', label: '帧头', hex: 'AA 01' },
-            { id: 'b2', type: 'var_ref', label: '速度', portName: 'speed', fieldType: 'uint16LE' },
-            { id: 'b3', type: 'checksum', label: '校验', checksum: 'sum8' },
+          frames: [
+            {
+              id: `${id}-frame-1`,
+              label: 'Frame 1',
+              blocks: [
+                { id: 'b1', type: 'const_hex', label: '帧头', hex: 'AA 01' },
+                { id: 'b2', type: 'var_ref', label: '速度', portName: 'speed', fieldType: 'uint16LE' },
+                { id: 'b3', type: 'checksum', label: '校验', checksum: 'sum8' },
+              ],
+              appendNewline: false,
+              sendMode: 'manual',
+              timerMs: 100,
+            },
           ],
-          appendNewline: false,
           loopbackEnabled: false,
-          sendMode: 'manual',
-          timerMs: 100,
           loopbackHistory: [],
         },
       };
@@ -241,7 +249,114 @@ export function createWidget(kind: WidgetConfig['kind']): WidgetConfig {
     case 'RawData':
       return {
         kind: 'RawData',
-        params: { id, label: 'Raw Data' },
+        params: { id, label: 'Raw Data', selectedInput: '' },
+      };
+    case 'Trigger':
+      return {
+        kind: 'Trigger',
+        params: {
+          id,
+          label: 'Trigger',
+          mode: 'manual',
+          edge: 'level',
+          defaultMiss: 0,
+          defaultMissText: '',
+          command: 'HELLO',
+          rules: [
+            {
+              id: nanoid(6),
+              pattern: 'HELLO',
+              matchType: 'exact',
+              outputType: 'number',
+              outputValue: 1,
+              outputText: '',
+              enabled: true,
+            },
+          ],
+          binding: { mode: 'None' },
+        },
+      };
+    case 'TextDisplay':
+      return {
+        kind: 'TextDisplay',
+        params: {
+          id,
+          label: 'TextDisplay',
+          fontSize: 'base',
+          monospace: true,
+        },
+      };
+    case 'TextInput':
+      return {
+        kind: 'TextInput',
+        params: {
+          id,
+          label: 'TextInput',
+          text: '',
+          placeholder: '',
+        },
+      };
+    case 'Str':
+      return {
+        kind: 'Str',
+        params: {
+          id,
+          label: 'Str',
+          op: 'len',
+          pos: 1,
+          len: 0,
+          size: 0,
+          tmpl: '',
+        },
+      };
+    case 'TextOut':
+      return {
+        kind: 'TextOut',
+        params: {
+          id,
+          label: 'TextOut',
+          targetTransport: '',
+          newline: 'none',
+          minIntervalMs: 50,
+        },
       };
   }
+}
+
+/// Model3D 配置归一化 — 为旧保存数据补齐姿态格式与模型来源等字段
+///
+/// 该函数是幂等的; 已包含合法 modelSource 时原样返回
+export function normalizeModel3DConfig(raw: Partial<Model3DConfig>): Model3DConfig {
+  const mode =
+    raw.mode === 'attitude' ||
+    raw.mode === 'trajectory-attitude' ||
+    raw.mode === 'trajectory'
+      ? raw.mode
+      : 'trajectory';
+  const attitudeInputMode =
+    raw.attitudeInputMode === 'degrees' ||
+    raw.attitudeInputMode === 'radians' ||
+    raw.attitudeInputMode === 'quaternion'
+      ? raw.attitudeInputMode
+      : 'radians';
+  const color = typeof raw.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(raw.color) ? raw.color : '#75beff';
+  const trailLength =
+    typeof raw.trailLength === 'number' && raw.trailLength > 0 ? raw.trailLength : 200;
+  const axisLength =
+    typeof raw.axisLength === 'number' && raw.axisLength > 0 ? raw.axisLength : 1.0;
+  const modelSource =
+    raw.modelSource?.kind === 'custom' && typeof raw.modelSource.path === 'string'
+      ? { kind: 'custom' as const, path: raw.modelSource.path, name: raw.modelSource.name ?? 'model.glb' }
+      : { kind: 'builtin-cube' as const };
+
+  return {
+    id: raw.id ?? '',
+    label: raw.label ?? 'Model3D',
+    mode,
+    attitudeInputMode,
+    trailLength,
+    color,
+    axisLength,
+    modelSource,
+  };
 }

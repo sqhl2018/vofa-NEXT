@@ -2,6 +2,11 @@ import { useRef, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import uPlot from 'uplot';
 import { timeBaseToWindowSec, VERTICAL_DIVS } from '../../../lib/utils/scopeUtils';
 import { getEffectiveChannel, getEffectiveRender, TIME_BASES_SEC, V_PER_DIV, formatVPerDiv } from '../../../types';
+import { useAppStore } from '../../../store/appStore';
+import { useSettingsStore } from '../../../store/settingsStore';
+import { useOnboardingStore } from '../../../store/onboardingStore';
+import { notify } from '../../../lib/tauri/notifications';
+import { t } from '../../../i18n';
 import {
   CHANNEL_COLORS, DERIVED_COLORS, TEXT_COLOR, GRID_COLOR, TICK_COLOR, getContainerSize,
 } from './waveformConstants';
@@ -12,7 +17,7 @@ import type { SeriesSlot } from './waveformSeries';
 
 /// 光标显示行为运行时配置 (由全局设置 + Ctrl 隐藏状态合成, 通过 ref 实时读取)
 export interface CursorDisplayOpts {
-  /// 光标吸附到曲线 (cursorSnap 设置): X 跟随鼠标, Y 吸附到曲线在鼠标 X 处的插值
+  /// 光标吸附到曲线 (cursorSnap 设置): X 跟随鼠标, Y 吸附到距光标最近的可见曲线在鼠标 X 处的插值
   snap: boolean;
   /// Ctrl/Cmd 隐藏模式: 关闭吸附, 隐藏悬停点与读数, 但保留十字线
   hidden: boolean;
@@ -43,6 +48,34 @@ export function interpYAtX(
   if (x1 === x0) return y0;
   const t = (xVal - x0) / (x1 - x0);
   return y0 + (y1 - y0) * t;
+}
+
+/// 在可见 slot 中找出"鼠标 X 处插值曲线"像素 Y 距 mouseTopPx 最近的一条
+/// 返回 slots 下标; 无可见 slot 或插值全部 NaN 时返回 -1
+/// 所有 series 共用同一 y scale (sharedY=真实值, 否则=div), 像素距离比较两种模式都成立
+/// 供光标 Y 吸附 (cursor.move) 与读数换算 (setCursor) 共用, 保证选中通道一致
+export function pickNearestVisibleSlot(
+  slots: SeriesSlot[],
+  cfg: ScopeAxisConfig,
+  dataX: ArrayLike<number | null | undefined> | undefined,
+  data: (ArrayLike<number | null | undefined> | undefined)[],
+  xVal: number,
+  mouseTopPx: number,
+  valToPos: (yVal: number) => number
+): number {
+  let best = -1;
+  let bestDist = Infinity;
+  for (let i = 0; i < slots.length; i++) {
+    if (!(cfg.channels[slots[i].cfgIdx]?.show ?? true)) continue;
+    const y = interpYAtX(dataX, data[i + 1], xVal);
+    if (isNaN(y)) continue;
+    const dist = Math.abs(valToPos(y) - mouseTopPx);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  return best;
 }
 
 // ---- uPlot 初始化 ----
@@ -146,20 +179,20 @@ export function useUplotInit(
         legend: { show: false },
         cursor: {
           points: { size: 4 },
+          // 左键拖动 = 框选 (uPlot 内建); 平移走右键 / Shift+左键 (usePanDrag)
           drag: { x: true, y: false },
-          // 光标吸附到"线": X 始终跟随鼠标 (不吸附), Y 吸附到首条可见曲线在鼠标 X 处的插值
+          // 光标吸附到"线": X 始终跟随鼠标 (不吸附), Y 吸附到距光标最近的可见曲线在鼠标 X 处的插值
           // snap 关闭或 Ctrl 隐藏时: X/Y 均自由跟随鼠标 (仍显示十字线)
           move: (u: uPlot, mouseLeft: number, mouseTop: number): [number, number] => {
             const o = cursorOptsRef.current;
             if (!o.snap || o.hidden || mouseLeft < 0) return [mouseLeft, mouseTop];
             const cfg = axisConfigRef.current;
             const slots = seriesSlotsRef.current;
-            let visSlot = -1;
-            for (let i = 0; i < slots.length; i++) {
-              if (cfg.channels[slots[i].cfgIdx]?.show ?? true) { visSlot = i; break; }
-            }
-            if (visSlot < 0) return [mouseLeft, mouseTop];
             const xVal = u.posToVal(mouseLeft, 'x');
+            const visSlot = pickNearestVisibleSlot(
+              slots, cfg, u.data[0], u.data, xVal, mouseTop, (v) => u.valToPos(v, 'y')
+            );
+            if (visSlot < 0) return [mouseLeft, mouseTop];
             const interpY = interpYAtX(u.data[0], u.data[visSlot + 1], xVal);
             if (isNaN(interpY)) return [mouseLeft, mouseTop];
             return [mouseLeft, u.valToPos(interpY, 'y')];
@@ -170,7 +203,8 @@ export function useUplotInit(
             time: false,
             range: () => {
               const c = axisConfigRef.current;
-              const end = c.running ? 0 : -c.hPosition;
+              // hPosition=0 即实时跟随 (end=0); 运行中 hPosition>0 时偏移回看历史, 数据继续刷新
+              const end = -c.hPosition;
               const win = timeBaseToWindowSec(c.timeBase);
               return [end - win, end];
             },
@@ -212,11 +246,21 @@ export function useUplotInit(
               const canvasLeft = left + plotLeft;
               const canvasTop = top + plotTop;
               const slots = seriesSlotsRef.current;
-              const firstVisibleIdx = slots.findIndex((s) => c.channels[s.cfgIdx]?.show ?? true);
-              const slotIdx = firstVisibleIdx >= 0 ? firstVisibleIdx : 0;
-              const firstSlot = slots[slotIdx];
-              const chCfg = firstSlot
-                ? getEffectiveChannel(c, firstSlot.cfgIdx)
+              // 吸附模式: 换算通道与 move 吸附的最近通道一致 (top 已是吸附后的像素 Y, 复算结果相同)
+              // 非吸附: 仍用第一条可见通道近似换算自由光标的读数
+              let slotIdx: number;
+              if (snapping) {
+                slotIdx = pickNearestVisibleSlot(
+                  slots, c, u.data[0], u.data, xSec, top, (v) => u.valToPos(v, 'y')
+                );
+                if (slotIdx < 0) slotIdx = 0;
+              } else {
+                const firstVisibleIdx = slots.findIndex((s) => c.channels[s.cfgIdx]?.show ?? true);
+                slotIdx = firstVisibleIdx >= 0 ? firstVisibleIdx : 0;
+              }
+              const selSlot = slots[slotIdx];
+              const chCfg = selSlot
+                ? getEffectiveChannel(c, selSlot.cfgIdx)
                 : { vPerDiv: 1, position: 0 };
               const yVal = c.sharedY ? yPixelVal : yPixelVal * chCfg.vPerDiv + chCfg.position;
               const channels: { label: string; val: number; color: string; isDerived: boolean }[] = [];
@@ -257,6 +301,8 @@ export function useUplotInit(
                 setSelectedRange(null);
                 return;
               }
+              // 首次框选时提示平移方式 (会话级一次)
+              maybeShowInteractHint();
               const s1 = u.posToVal(left, 'x');
               const s2 = u.posToVal(left + width, 'x');
               setSelectedRange({
@@ -280,14 +326,17 @@ export function useUplotInit(
       lastW = w; lastH = h;
     };
 
+    // 整体 rAF 延迟: RO 回调内同步创建/setSize uPlot 会读写布局,
+    // 易触发 "ResizeObserver loop completed with undelivered notifications"
     const resize = () => {
       const { w, h } = getContainerSize(container);
       if (w === lastW && h === lastH) return;
-      if (!plot) { createPlot(); return; }
+      lastW = w; lastH = h;
       if (resizeRaf !== null) cancelAnimationFrame(resizeRaf);
       resizeRaf = requestAnimationFrame(() => {
-        plot?.setSize({ width: w, height: h });
-        lastW = w; lastH = h;
+        resizeRaf = null;
+        if (!plot) createPlot();
+        else plot.setSize({ width: w, height: h });
       });
     };
 
@@ -358,21 +407,41 @@ export function useWheelZoom(
   }, [onConfigChange]);
 }
 
-// ---- 中键拖拽平移 ----
+// ---- 右键 / Shift+左键 / 中键 拖拽平移 ----
+
+/// 首次框选/平移时弹出交互提示 (会话级一次, 遵循「上下文提示」开关)
+function maybeShowInteractHint() {
+  if (!useSettingsStore.getState().settings.general.showContextualTips) return;
+  const st = useOnboardingStore.getState();
+  if (st.waveformInteractHintShown) return;
+  st.markWaveformInteractHintShown();
+  const lang = useAppStore.getState().lang;
+  notify.info(
+    t(lang, 'waveformInteractHintTitle'),
+    t(lang, 'waveformInteractHintMessage'),
+    { actions: [{ label: t(lang, 'closeHintGotIt'), run: () => {} }] }
+  );
+}
 
 export function usePanDrag(
   containerRef: React.RefObject<HTMLDivElement | null>,
   plotRef: React.MutableRefObject<uPlot | null>,
   axisConfigRef: React.MutableRefObject<ScopeAxisConfig>,
   onConfigChange: ((next: ScopeAxisConfig) => void) | undefined,
+  setSelectedRange: React.Dispatch<React.SetStateAction<{ startSec: number; endSec: number } | null>>,
 ) {
-  const panRef = useRef<{ startX: number; startY: number; startHPos: number; startPos: number; chIdx: number } | null>(null);
+  const panRef = useRef<{ startX: number; startY: number; startHPos: number; startPos: number; chIdx: number; dragged: boolean } | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    const isPanGesture = (e: MouseEvent) =>
+      e.button === 1 || e.button === 2 || (e.button === 0 && e.shiftKey);
+    // 捕获阶段处理平移手势: stopPropagation 阻止 uPlot 的框选
+    // (uPlot 在 over 元素上只认 button==0 且不检查修饰键, 不拦截则 Shift+左键会同时触发框选)
     const onMouseDown = (e: MouseEvent) => {
-      if (e.button !== 1) return;
+      if (!isPanGesture(e)) return;
+      e.stopPropagation();
       e.preventDefault();
       const cfg = axisConfigRef.current;
       const firstVisible = cfg.channels.findIndex((c) => c.show);
@@ -383,6 +452,7 @@ export function usePanDrag(
         startHPos: cfg.hPosition,
         startPos: getEffectiveChannel(cfg, chIdx).position,
         chIdx,
+        dragged: false,
       };
       el.style.cursor = 'grabbing';
     };
@@ -392,6 +462,13 @@ export function usePanDrag(
       const plot = plotRef.current;
       if (!plot) return;
       e.preventDefault();
+      if (!ps.dragged) {
+        // 首次真正拖动时: 清框选 + 弹交互提示 (单击不触发)
+        ps.dragged = true;
+        maybeShowInteractHint();
+        setSelectedRange(null);
+        plot.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+      }
       const cfg = axisConfigRef.current;
       const dx = e.clientX - ps.startX;
       const dy = e.clientY - ps.startY;
@@ -407,7 +484,9 @@ export function usePanDrag(
       } else {
         newChannels[ps.chIdx] = { ...newChannels[ps.chIdx], position: newPos };
       }
-      onConfigChange?.({ ...cfg, running: false, hPosition: Math.max(0, newHPos), channels: newChannels });
+      // 「交互时自动暂停」开启时才停止刷新; 关闭时运行中也可拖动 (含垂直拖动) 不打断刷新
+      const pauseOnInteract = useSettingsStore.getState().settings.editor.pauseOnInteract;
+      onConfigChange?.({ ...cfg, ...(pauseOnInteract ? { running: false } : {}), hPosition: Math.max(0, newHPos), channels: newChannels });
     };
     const onMouseUp = () => {
       if (panRef.current) {
@@ -415,15 +494,24 @@ export function usePanDrag(
         el.style.cursor = '';
       }
     };
-    el.addEventListener('mousedown', onMouseDown);
+    // 屏蔽波形图上的右键菜单: preventDefault 挡原生菜单; stopPropagation 挡
+    // App 根节点 onContextMenu 弹出的应用内自定义菜单 (macOS 上 contextmenu 随
+    // 右键按下即触发, 无法等拖动结束再判断, 且波形图上本无右键菜单)
+    const onContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    el.addEventListener('mousedown', onMouseDown, true);
+    el.addEventListener('contextmenu', onContextMenu);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('mouseup', onMouseUp);
     return () => {
-      el.removeEventListener('mousedown', onMouseDown);
+      el.removeEventListener('mousedown', onMouseDown, true);
+      el.removeEventListener('contextmenu', onContextMenu);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
     };
-  }, [onConfigChange]);
+  }, [onConfigChange, setSelectedRange]);
 }
 
 // ---- Ctrl/Cmd 隐藏游标 ----

@@ -43,7 +43,7 @@ export function AllTabContent({
       <div className="flex flex-row flex-wrap gap-1 pb-1.5 border-b border-border">
         <button
           className={`inline-flex items-center gap-1 px-2 h-7 border rounded text-xs cursor-pointer transition-all duration-150 ${config.running ? 'bg-green border-green text-black' : 'bg-red border-red text-black'}`}
-          onClick={() => patch({ running: !config.running })}
+          onClick={() => patch(config.running ? { running: false } : { running: true, hPosition: 0 })}
           title={config.running ? t(lang, 'stop') : t(lang, 'run')}
         >
           {config.running ? <Square size={12} /> : <Play size={12} />}
@@ -183,7 +183,7 @@ function SharedYControls({
 }) {
   const unit = yUnit ?? '';
   // 共用 Y: 所有通道共享 channels[0] 的 vPerDiv/position
-  const shared = channels[0] ?? { vPerDiv: 1, position: 0, show: true, coupling: 'DC' as Coupling };
+  const shared = channels[0] ?? { vPerDiv: 1, position: 0, show: true, coupling: 'DC' };
   return (
     <>
       {/* 共用 V/div 旋钮 + 下拉 (操作 channels[0], 影响所有通道) */}

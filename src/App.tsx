@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import { Settings, Info, RefreshCw, PanelLeft } from 'lucide-react';
 import { ActivityBar } from './components/layout/ActivityBar';
 import { Sidebar } from './components/layout/Sidebar';
@@ -14,11 +15,17 @@ import { DockDragGhost } from './components/ui/DockDragGhost';
 import { SuspenseFallback } from './components/ui/SuspenseFallback';
 import { useContextMenu } from './lib/hooks/useContextMenu';
 import { useAppStore } from './store/appStore';
+import { useHistoryStore } from './store/historyStore';
 import { useSettingsStore } from './store/settingsStore';
 import { useOnboardingStore } from './store/onboardingStore';
-import { useLayoutStore } from './store/layoutStore';
+import { useLayoutStore, AI_FLOAT_MIN_W, AI_FLOAT_MIN_H } from './store/layoutStore';
+import { AiChatPanel } from './components/ai/AiChatPanel';
+import { useUpdateStore } from './store/updateStore';
 import { t } from './i18n';
 import { createWidget } from './lib/utils/createWidget';
+import { openDataPanelAndReveal } from './lib/utils/revealDataTab';
+import { initAiToolHost } from './lib/ai/toolHost';
+import { resolveStartupFlow, shouldShowGuideAfterUpdate } from './lib/startupFlow';
 
 // 重型弹窗 — 懒加载 (各模块仅含 named export, 经 *.lazy.tsx 包装为 default)
 const SettingsModal = lazy(() => import('./components/SettingsModal.lazy'));
@@ -26,6 +33,10 @@ const AboutModal = lazy(() => import('./components/AboutModal.lazy'));
 const CustomWidgetEditorContainer = lazy(() => import('./components/CustomWidgetEditorContainer.lazy'));
 const OnboardingWizard = lazy(() => import('./components/onboarding/OnboardingWizard.lazy'));
 const HelpCenterModal = lazy(() => import('./components/onboarding/HelpCenterModal.lazy'));
+const UpdateDialog = lazy(() => import('./components/UpdateDialog.lazy'));
+const KeychainPermissionDialog = lazy(
+  () => import('./components/KeychainPermissionDialog.lazy')
+);
 
 function App() {
   const initEventListeners = useAppStore((s) => s.initEventListeners);
@@ -34,6 +45,8 @@ function App() {
   const sidebarVisible = useAppStore((s) => s.sidebarVisible);
   const toggleSidebar = useAppStore((s) => s.toggleSidebar);
   const lang = useAppStore((s) => s.lang);
+  const workspaceReady = useAppStore((s) => s.workspaceReady);
+  const workspaceRestored = useAppStore((s) => s.workspaceRestored);
 
   const loadSettings = useSettingsStore((s) => s.load);
   const openSettings = useSettingsStore((s) => s.open);
@@ -41,20 +54,51 @@ function App() {
   const isAboutOpen = useSettingsStore((s) => s.isAboutOpen);
   const closeAbout = useSettingsStore((s) => s.closeAbout);
   const isSettingsOpen = useSettingsStore((s) => s.isOpen);
+  const keychainPermissionPromptOpen = useSettingsStore(
+    (s) => s.keychainPermissionPromptOpen
+  );
 
   const settingsLoaded = useSettingsStore((s) => s.loaded);
   const showOnboarding = useSettingsStore((s) => s.settings.general.showOnboarding);
+  const autoCheckUpdate = useSettingsStore((s) => s.settings.general.autoCheckUpdate);
+  const updateDialogOpen = useUpdateStore((s) => s.dialogOpen);
   const statusBarVisible = useSettingsStore((s) => s.settings.appearance.statusBarVisible);
   const hasOpenedOnboarding = useOnboardingStore((s) => s.hasOpenedThisSession);
   const openOnboarding = useOnboardingStore((s) => s.openWizard);
   const isWizardOpen = useOnboardingStore((s) => s.isWizardOpen);
   const isHelpOpen = useOnboardingStore((s) => s.isHelpOpen);
   const isCustomEditorOpen = useAppStore((s) => s.customEditorState.open);
+  const autoUpdateStartedRef = useRef(false);
+  const versionGuideCheckedRef = useRef(false);
 
-  // 布局编排 (侧边栏停靠; 中央区模块树由 dockStore 负责)
+  const startupFlow = resolveStartupFlow({
+    settingsLoaded,
+    showOnboarding,
+    hasOpenedOnboarding,
+    isOnboardingOpen: isWizardOpen,
+    keychainPermissionPromptOpen,
+    autoCheckUpdate,
+  });
+
+  // 布局编排 (侧边栏与 AI 面板停靠; 中央区模块树由 dockStore 负责)
   const sidebarDock = useLayoutStore((s) => s.sidebarDock);
   const draggingSidebar = useLayoutStore((s) => s.draggingSidebar);
   const dockEdgeHover = useLayoutStore((s) => s.dockEdgeHover);
+  const aiPanelVisible = useLayoutStore((s) => s.aiPanelVisible);
+  const aiDock = useLayoutStore((s) => s.aiDock);
+  const aiFloatRect = useLayoutStore((s) => s.aiFloatRect);
+  const draggingAiPanel = useLayoutStore((s) => s.draggingAiPanel);
+  const aiDockEdgeHover = useLayoutStore((s) => s.aiDockEdgeHover);
+
+  // 浮动窗口渲染位置 clamp 到窗口内 (窗口缩小后仍可见; store 原值不动)
+  const floatPos = useMemo(() => {
+    const maxX = Math.max(8, window.innerWidth - aiFloatRect.w - 8);
+    const maxY = Math.max(8, window.innerHeight - aiFloatRect.h - 8);
+    return {
+      x: Math.min(Math.max(aiFloatRect.x, 8), maxX),
+      y: Math.min(Math.max(aiFloatRect.y, 8), maxY),
+    };
+  }, [aiFloatRect.x, aiFloatRect.y, aiFloatRect.w, aiFloatRect.h]);
 
   // 全局默认右键菜单
   const defaultMenuItems = useMemo(
@@ -105,18 +149,28 @@ function App() {
     });
     refreshPorts();
 
-    // 首次启动种子: widgets/tabs/nodes 均为内存态不持久化, 默认放一个 RawData 控件
-    // 以保留旧版固定 raw Tab 的常驻行为 (画布占位节点 + raw 数据 Tab)
-    const st = useAppStore.getState();
-    if (st.widgets.length === 0 && !st.dataTabs.some((t) => t.type === 'raw')) {
-      st.addWidget(createWidget('RawData'), 'default', { x: 420, y: 120 });
-    }
-
     return () => {
       cancelled = true;
       cleanupRef.fn?.();
     };
   }, []);
+
+  // 首次启动种子: 工作区由后端持久化, 仅在"无持久化工作区且画布为空"时
+  // 默认放一个 RawData 控件, 以保留旧版固定 raw Tab 的常驻行为
+  // (画布占位节点 + raw 数据 Tab)
+  useEffect(() => {
+    if (!workspaceReady || workspaceRestored) return;
+    const st = useAppStore.getState();
+    if (st.widgets.length === 0 && !st.dataTabs.some((t) => t.type === 'raw')) {
+      const rawWidget = createWidget('RawData');
+      st.addWidget(rawWidget, 'default', { x: 560, y: 120 });
+      // 空图时再给出 设备→协议解析→RawData 初始连线, 新用户开箱即有完整数据通路
+      const fresh = useAppStore.getState();
+      if (!fresh.rfNodes.some((n) => n.data?.global === true)) {
+        fresh.seedInitialGraph(rawWidget.params.id);
+      }
+    }
+  }, [workspaceReady, workspaceRestored]);
 
   // 设置加载完成后: 关闭启动页并显示主窗口
   // 注意不能用 requestAnimationFrame 等待首帧 — 窗口隐藏时 rAF 会被系统节流不触发
@@ -125,12 +179,55 @@ function App() {
     void invoke('close_splashscreen');
   }, [settingsLoaded]);
 
+  // AI 前端托管工具宿主 — 监听 ai_tool_invoke, 让内置 AI 编辑节点/操作软件 (幂等)
+  useEffect(() => {
+    initAiToolHost();
+  }, []);
+
   // 设置加载完成后，根据 showOnboarding 自动弹出首次引导（仅一次）
   useEffect(() => {
     if (settingsLoaded && showOnboarding && !hasOpenedOnboarding) {
       openOnboarding();
     }
   }, [settingsLoaded, showOnboarding, hasOpenedOnboarding, openOnboarding]);
+
+  // 设置加载完成后: 版本更新检测 (每会话一次) — 版本变化则弹出一次操作指南,
+  // 并立即持久化新版本号 (中途关闭向导也不会重复弹; getVersion 失败 = 非 Tauri 环境, 跳过)
+  useEffect(() => {
+    if (!settingsLoaded || versionGuideCheckedRef.current) return;
+    versionGuideCheckedRef.current = true;
+    void (async () => {
+      let current: string;
+      try {
+        current = await getVersion();
+      } catch {
+        return;
+      }
+      const settings = useSettingsStore.getState();
+      const lastSeen = settings.settings.general.lastSeenVersion;
+      if (
+        shouldShowGuideAfterUpdate(lastSeen, current) &&
+        !useOnboardingStore.getState().hasOpenedThisSession
+      ) {
+        useOnboardingStore.getState().openWizard();
+      }
+      if (lastSeen !== current) {
+        settings.update('general', 'lastSeenVersion', current);
+      }
+    })();
+  }, [settingsLoaded]);
+
+  // 设置加载完成后: 自动检查更新 (仅一次; auto 失败不打断用户)
+  useEffect(() => {
+    if (
+      !startupFlow.canCheckForUpdates ||
+      autoUpdateStartedRef.current
+    ) {
+      return;
+    }
+    autoUpdateStartedRef.current = true;
+    void useUpdateStore.getState().check('auto');
+  }, [startupFlow.canCheckForUpdates]);
 
   // 监听原生菜单事件 (menu:about / menu:settings / menu:new-tab / menu:close-tab / menu:toggle-sidebar)
   // 事件处理器内通过 getState() 读取最新状态, 避免订阅易变字段导致反复重订阅
@@ -155,6 +252,20 @@ function App() {
           st.toggleSidebar(st.sidebarView);
           break;
         }
+        // 数据面板菜单 (Panel) — 与 src-tauri/crates/menu_shell 的 ids::PANEL_OPEN_* 一一对应;
+        // 打开后同步把目标 Tab 所在 data 卡片切过去 (与侧边栏/MenuBar 入口行为一致)
+        case 'menu:panel-open-compile-errors':
+          openDataPanelAndReveal(() => useAppStore.getState().addCompileErrorsTab());
+          break;
+        case 'menu:panel-open-compile-results':
+          openDataPanelAndReveal(() => useAppStore.getState().addCompileResultsTab());
+          break;
+        case 'menu:panel-open-can':
+          openDataPanelAndReveal(() => useAppStore.getState().addCanTab());
+          break;
+        case 'menu:panel-open-logic':
+          openDataPanelAndReveal(() => useAppStore.getState().addLogicTab());
+          break;
         default:
           break;
       }
@@ -176,46 +287,154 @@ function App() {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
-  // 中央区 — Dock 布局树 (卡片可拆分/合并/重排, 尺寸比例跟随卡片)
-  const centerNode = (
-    <Panel key="center" id="center" order={sidebarDock === 'left' ? 2 : 1} className="min-w-0">
-      <DockLayout />
-    </Panel>
+  // 全局快捷键: 文档域撤销/重做 — Ctrl/Cmd+Z / Ctrl+Y (Shift 反转 Z 方向)。
+  // 焦点在文本输入类元素 (input/textarea/contentEditable, 含 CodeMirror) 时
+  // 直接放行 — 保留各输入控件自身的原生文本撤销, 与文档域历史互不干扰。
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      return (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable
+      );
+    };
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      if (key !== 'z' && key !== 'y') return;
+      if (isEditableTarget(e.target)) return; // 文本框内: 原生文本撤销优先
+      const history = useHistoryStore.getState();
+      e.preventDefault();
+      if (key === 'y' || e.shiftKey) {
+        history.redo();
+      } else {
+        history.undo();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // 主横向面板组 — 按停靠位置拼装: [左侧停靠面板…] 中央 Dock [右侧停靠面板…]
+  // (AI 面板 left/right 与侧边栏同级; bottom/float 在下方单独处理)
+  const aiDockedSide = aiPanelVisible && (aiDock === 'left' || aiDock === 'right') ? aiDock : null;
+  const sidebarSide = sidebarVisible ? sidebarDock : null;
+  const bottomDocked = aiPanelVisible && aiDock === 'bottom';
+  const handleClass = 'w-2 rounded-full bg-transparent hover:bg-accent/50 transition-colors';
+  // AI 面板入场: 按停靠方向滑入 (浮动缩放入场), 随容器挂载播放一次
+  const aiPanelAnimClass =
+    aiDock === 'right'
+      ? 'animate-ai-in-right'
+      : aiDock === 'left'
+        ? 'animate-ai-in-left'
+        : aiDock === 'bottom'
+          ? 'animate-ai-in-bottom'
+          : 'animate-ai-in-float';
+
+  const mainGroupItems: ReactNode[] = [];
+  let panelOrder = 0;
+  const nextOrder = () => ++panelOrder;
+  const resizeHandle = (key: string) => (
+    <PanelResizeHandle key={key} className={handleClass} />
   );
-  const sidebarNode = sidebarVisible ? (
-    <Panel key="sidebar" id="sidebar" order={sidebarDock === 'left' ? 1 : 2} defaultSize={18} minSize={12} maxSize={35}>
+  const sidebarPanel = (ord: number) => (
+    <Panel key="sidebar" id="sidebar" order={ord} defaultSize={18} minSize={12} maxSize={35}>
       <div className="module-card h-full w-full">
         <Sidebar view={sidebarView} />
       </div>
     </Panel>
-  ) : null;
-  const mainHandle = sidebarVisible ? (
-    <PanelResizeHandle
-      key="main-handle"
-      className="w-2 rounded-full bg-transparent hover:bg-accent/50 transition-colors"
-    />
-  ) : null;
+  );
+  const aiPanelNode = (ord: number) => (
+    <Panel key="ai-panel" id="ai-panel" order={ord} defaultSize={24} minSize={14} maxSize={55}>
+      <div className={`module-card dock-card-acrylic h-full w-full ${aiPanelAnimClass}`}>
+        <AiChatPanel />
+      </div>
+    </Panel>
+  );
+  if (sidebarSide === 'left') mainGroupItems.push(sidebarPanel(nextOrder()), resizeHandle('main-handle-l'));
+  if (aiDockedSide === 'left') mainGroupItems.push(aiPanelNode(nextOrder()), resizeHandle('ai-handle-l'));
+  mainGroupItems.push(
+    <Panel key="center" id="center" order={nextOrder()} className="min-w-0">
+      <DockLayout />
+    </Panel>
+  );
+  if (aiDockedSide === 'right') mainGroupItems.push(resizeHandle('ai-handle-r'), aiPanelNode(nextOrder()));
+  if (sidebarSide === 'right') mainGroupItems.push(resizeHandle('main-handle-r'), sidebarPanel(nextOrder()));
+
+  // 工作台行 — bottom 停靠时被纵向 PanelGroup 包裹, 否则直接占满剩余高度
+  const workbench = (
+    <div className={`flex min-h-0 gap-2 ${bottomDocked ? 'h-full' : 'flex-1'}`} data-tour="tour-workbench">
+      <div className="module-card w-12 flex-shrink-0">
+        <ActivityBar
+          activeView={sidebarVisible ? sidebarView : null}
+          onSelect={toggleSidebar}
+        />
+      </div>
+      <div className="flex-1 min-w-0">
+        <PanelGroup key={`${sidebarDock}:${aiDock}`} direction="horizontal" autoSaveId="sp-main">
+          {mainGroupItems}
+        </PanelGroup>
+      </div>
+    </div>
+  );
 
   return (
-    <div className="relative flex h-full flex-col bg-bg-activity p-2" onContextMenu={onAppContextMenu}>
+    <div className="relative flex h-full flex-col bg-bg-window p-2" onContextMenu={onAppContextMenu}>
       {/* Windows: 透明窗口下原生菜单栏无法正确渲染 (白字白底/透视), 由自定义菜单栏接管; 其它平台内部返回 null */}
       <MenuBar />
-      <div className="flex flex-1 min-h-0 gap-2">
-        <div className="module-card w-12 flex-shrink-0">
-          <ActivityBar
-            activeView={sidebarVisible ? sidebarView : null}
-            onSelect={toggleSidebar}
+      {bottomDocked ? (
+        // AI 面板停靠底部 — 工作台与对话面板纵向分栏
+        <PanelGroup direction="vertical" autoSaveId="sp-ai-bottom" className="flex-1 min-h-0">
+          <Panel minSize={30} className="min-h-0">
+            {workbench}
+          </Panel>
+          <PanelResizeHandle className="h-2 rounded-full bg-transparent hover:bg-accent/50 transition-colors" />
+          <Panel defaultSize={34} minSize={15} maxSize={70} className="min-h-0">
+            <div className={`module-card dock-card-acrylic h-full w-full ${aiPanelAnimClass}`}>
+              <AiChatPanel />
+            </div>
+          </Panel>
+        </PanelGroup>
+      ) : (
+        workbench
+      )}
+      {/* AI 面板浮动 — 标题栏拖动重停靠 (dockDrag), 右下角把手调尺寸 */}
+      {aiPanelVisible && aiDock === 'float' && (
+        <div
+          className="absolute z-50"
+          style={{ left: floatPos.x, top: floatPos.y, width: aiFloatRect.w, height: aiFloatRect.h }}
+        >
+          <div className={`module-card dock-card-acrylic h-full w-full shadow-2xl ${aiPanelAnimClass}`}>
+            <AiChatPanel />
+          </div>
+          <div
+            className="absolute -right-0.5 -bottom-0.5 w-3.5 h-3.5 cursor-nwse-resize rounded-sm hover:bg-accent/60"
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              const startX = e.clientX;
+              const startY = e.clientY;
+              const start = useLayoutStore.getState().aiFloatRect;
+              const onMove = (ev: PointerEvent) => {
+                useLayoutStore.getState().setAiFloatRect({
+                  x: start.x,
+                  y: start.y,
+                  w: Math.max(AI_FLOAT_MIN_W, start.w + ev.clientX - startX),
+                  h: Math.max(AI_FLOAT_MIN_H, start.h + ev.clientY - startY),
+                });
+              };
+              const onUp = () => {
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+              };
+              window.addEventListener('pointermove', onMove);
+              window.addEventListener('pointerup', onUp);
+            }}
           />
         </div>
-        <div className="flex-1 min-w-0">
-          <PanelGroup key={sidebarDock} direction="horizontal" autoSaveId="sp-main">
-            {(sidebarDock === 'left'
-              ? [sidebarNode, mainHandle, centerNode]
-              : [centerNode, mainHandle, sidebarNode]
-            ).filter(Boolean)}
-          </PanelGroup>
-        </div>
-      </div>
+      )}
       {statusBarVisible && (
         <div className="module-card flex-shrink-0 mt-2">
           <StatusBar />
@@ -247,10 +466,40 @@ function App() {
         </>
       )}
 
+      {/* AI 面板拖拽时: 左/右/下边缘热区 + 松手空白处浮动 */}
+      {draggingAiPanel && (
+        <>
+          {(['left', 'right', 'bottom'] as const).map((edge) => (
+            <div
+              key={edge}
+              data-dock-zone="ai-dock"
+              data-dock-edge={edge}
+              className={
+                edge === 'bottom'
+                  ? 'absolute left-0 right-0 bottom-0 h-24 z-40'
+                  : `absolute top-0 bottom-0 w-20 z-40 ${edge === 'left' ? 'left-0' : 'right-0'}`
+              }
+            />
+          ))}
+          {aiDockEdgeHover && (
+            <div
+              className="snap-drop-zone visible"
+              style={
+                aiDockEdgeHover === 'left'
+                  ? { top: 6, left: 6, width: '18%', height: 'calc(100% - 12px)' }
+                  : aiDockEdgeHover === 'right'
+                    ? { top: 6, left: '82%', width: '18%', height: 'calc(100% - 12px)' }
+                    : { bottom: 6, left: 6, width: 'calc(100% - 12px)', height: '32%' }
+              }
+            />
+          )}
+        </>
+      )}
+
       <ContextMenu />
       <DockDragGhost />
       <NotificationToasts />
-      {/* 弹窗按需挂载: 打开时才触发懒加载, 避免启动时 5 个 lazy chunk 并发加载导致全屏遮罩闪烁 */}
+      {/* 弹窗按需挂载:打开时才触发懒加载,避免启动时多个 lazy chunk 并发加载导致全屏遮罩闪烁 */}
       {isSettingsOpen && (
         <Suspense fallback={<SuspenseFallback overlay />}>
           <SettingsModal />
@@ -271,9 +520,19 @@ function App() {
           <OnboardingWizard />
         </Suspense>
       )}
+      {startupFlow.showKeychainPermissionPrompt && (
+        <Suspense fallback={<SuspenseFallback overlay />}>
+          <KeychainPermissionDialog />
+        </Suspense>
+      )}
       {isHelpOpen && (
         <Suspense fallback={<SuspenseFallback overlay />}>
           <HelpCenterModal />
+        </Suspense>
+      )}
+      {updateDialogOpen && (
+        <Suspense fallback={<SuspenseFallback overlay />}>
+          <UpdateDialog />
         </Suspense>
       )}
     </div>

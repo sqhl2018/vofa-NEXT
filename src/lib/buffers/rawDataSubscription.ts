@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { RawDataBatch, RawDataDirection } from '../../types';
-import { makeOrderedSink, subscribeSharded } from './shardedSubscription';
+import { subscribeDisplay } from './shardedSubscription';
 import { tickMetric } from '../utils/perfLog';
 
 export type DirectionFilter = 'all' | RawDataDirection;
@@ -20,23 +20,22 @@ function countBytes(key: string, onEvent: (batch: RawDataBatch) => void) {
   };
 }
 
-/// 订阅原始数据 — 统一分片流 (增量 drain + 自动并发分片)
-///
-/// source: Transport 节点 id (每源一个 RawDataCollector, rx/tx 都进该实例)
-/// 单 channel 够用时只有 shard 0 工作 (等价于旧行为), 积压超过阈值时
-/// 后端自动多通道并行推送; 每批带组级 seq, 在此重组后交付。
-/// 返回取消订阅函数 (取消全部分片)
+/// 订阅原始数据。每个逻辑源使用一个后端有序流和一个 IPC Channel。
 export function subscribeRawData(
   source: string,
   onEvent: (batch: RawDataBatch) => void,
-  options?: { intervalMs?: number; maxBytes?: number }
+  options?: { intervalMs?: number; maxBytes?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<RawDataBatch>(
-    'subscribe_rawdata',
-    'unsubscribe_rawdata',
-    { source },
-    makeOrderedSink(countBytes('rawdata:global', onEvent)),
-    { intervalMs: options?.intervalMs, maxBytes: options?.maxBytes }
+  return subscribeDisplay<RawDataBatch>(
+    {
+      kind: 'raw_data',
+      origin: { kind: 'transport', id: source },
+      direction: '',
+      search: '',
+    },
+    'raw_data',
+    countBytes('rawdata:global', onEvent),
+    { intervalMs: options?.intervalMs, maxItems: options?.maxBytes },
   );
 }
 
@@ -45,14 +44,18 @@ export function subscribeRawData(
 export function subscribeRawDataNode(
   nodeId: string,
   onEvent: (batch: RawDataBatch) => void,
-  options?: { intervalMs?: number; maxBytes?: number }
+  options?: { intervalMs?: number; maxBytes?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<RawDataBatch>(
-    'subscribe_rawdata_node',
-    'unsubscribe_rawdata_node',
-    { nodeId },
-    makeOrderedSink(onEvent),
-    { intervalMs: options?.intervalMs, maxBytes: options?.maxBytes }
+  return subscribeDisplay<RawDataBatch>(
+    {
+      kind: 'raw_data',
+      origin: { kind: 'decoder', id: nodeId },
+      direction: '',
+      search: '',
+    },
+    'raw_data',
+    onEvent,
+    { intervalMs: options?.intervalMs, maxItems: options?.maxBytes },
   );
 }
 
@@ -63,18 +66,18 @@ export function subscribeRawDataFiltered(
   source: string,
   filter: RawDataFilterOptions,
   onEvent: (batch: RawDataBatch) => void,
-  options?: { intervalMs?: number; maxBytes?: number }
+  options?: { intervalMs?: number; maxBytes?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<RawDataBatch>(
-    'subscribe_rawdata_filtered',
-    'unsubscribe_rawdata',
+  return subscribeDisplay<RawDataBatch>(
     {
-      source,
+      kind: 'raw_data',
+      origin: { kind: 'transport', id: source },
       direction: filter.directionFilter,
       search: filter.searchTerm,
     },
-    makeOrderedSink(countBytes('rawdata:filtered', onEvent)),
-    { intervalMs: options?.intervalMs, maxBytes: options?.maxBytes }
+    'raw_data',
+    countBytes('rawdata:filtered', onEvent),
+    { intervalMs: options?.intervalMs, maxItems: options?.maxBytes },
   );
 }
 
@@ -83,18 +86,18 @@ export function subscribeRawDataNodeFiltered(
   nodeId: string,
   filter: RawDataFilterOptions,
   onEvent: (batch: RawDataBatch) => void,
-  options?: { intervalMs?: number; maxBytes?: number }
+  options?: { intervalMs?: number; maxBytes?: number },
 ): { cancel: () => void } {
-  return subscribeSharded<RawDataBatch>(
-    'subscribe_rawdata_node_filtered',
-    'unsubscribe_rawdata_node',
+  return subscribeDisplay<RawDataBatch>(
     {
-      nodeId,
+      kind: 'raw_data',
+      origin: { kind: 'decoder', id: nodeId },
       direction: filter.directionFilter,
       search: filter.searchTerm,
     },
-    makeOrderedSink(onEvent),
-    { intervalMs: options?.intervalMs, maxBytes: options?.maxBytes }
+    'raw_data',
+    onEvent,
+    { intervalMs: options?.intervalMs, maxItems: options?.maxBytes },
   );
 }
 
