@@ -70,19 +70,28 @@ interface CustomWidgetProps {
   height?: number;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isCustomWidgetDef(value: unknown): value is CustomWidgetDef {
+  return isRecord(value) && typeof value.render === 'function';
+}
+
 /// 求值用户代码并返回 widget 定义对象 (供外部使用, 如读取 ports/settings schema)
 export function evalCustomWidgetDef(code: string): {
   def: CustomWidgetDef | null;
   error: string | null;
 } {
   try {
-     
-    const fn = new Function(`'use strict'; return (${code});`);
+    // User-authored widgets intentionally execute JavaScript in the isolated desktop webview.
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
+    const fn = new Function(`'use strict'; return (${code});`) as () => unknown;
     const def = fn();
-    if (!def || typeof def !== 'object') {
+    if (!isRecord(def)) {
       return { def: null, error: '代码必须返回一个对象' };
     }
-    if (typeof def.render !== 'function') {
+    if (!isCustomWidgetDef(def)) {
       return { def: null, error: '代码必须定义 render(ctx) 函数' };
     }
     return { def, error: null };
@@ -205,7 +214,7 @@ export const CustomWidget = memo(function CustomWidget({ widget, onEdit, height 
     () => Object.fromEntries(
       inputPorts.map((port) => [port, inputStates[port]?.latest?.value ?? 0]),
     ),
-    [inputPorts.join('\u0000'), inputStates],
+    [inputPorts, inputStates],
   );
   const submitCustomOutput = useAppStore((s) => s.submitCustomOutput);
 
@@ -218,8 +227,8 @@ export const CustomWidget = memo(function CustomWidget({ widget, onEdit, height 
   // 监听 iframe 消息
   useEffect(() => {
     const handler = (ev: MessageEvent) => {
-      const msg = ev.data;
-      if (!msg || msg.source !== 'custom-widget') return;
+      const msg: unknown = ev.data;
+      if (!isRecord(msg) || msg.source !== 'custom-widget' || typeof msg.type !== 'string') return;
       switch (msg.type) {
         case 'ready':
           readyRef.current = true;
@@ -234,10 +243,13 @@ export const CustomWidget = memo(function CustomWidget({ widget, onEdit, height 
           }
           break;
         case 'error':
-          setError(msg.message);
+          if (typeof msg.message === 'string') setError(msg.message);
           break;
         case 'log':
-          setLogs((prev) => [...prev.slice(-9), msg.args.join(' ')]);
+          if (Array.isArray(msg.args)) {
+            const args: unknown[] = msg.args;
+            setLogs((prev) => [...prev.slice(-9), args.map((arg) => String(arg)).join(' ')]);
+          }
           break;
       }
     };
@@ -316,7 +328,7 @@ export const CustomWidget = memo(function CustomWidget({ widget, onEdit, height 
       )}
       {!embedded && (
         <div className="text-xs text-text-secondary uppercase tracking-[0.3px]">
-          {def?.name || widget.params.label || 'Custom'}
+          {(def?.name ?? widget.params.label) || 'Custom'}
         </div>
       )}
       <iframe

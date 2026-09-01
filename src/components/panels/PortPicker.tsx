@@ -3,6 +3,7 @@ import { useAppStore } from '../../store/appStore';
 import { t } from '../../i18n';
 import { RefreshCw, Search, Usb } from 'lucide-react';
 import type { PortInfo } from '../../types';
+import { activateOnKeyboard } from '../../lib/utils/a11y';
 
 /// 端口条目 (端口信息 + 在原始列表中的索引)
 interface PortEntry {
@@ -92,7 +93,7 @@ export function PortPicker({
         <button
           className="w-6 h-6 flex items-center justify-center rounded text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
           title={t(lang, 'refresh')}
-          onClick={() => refreshPorts()}
+          onClick={() => { void refreshPorts(); }}
         >
           <RefreshCw size={13} />
         </button>
@@ -150,6 +151,9 @@ export function PortPicker({
                     : 'border-transparent hover:bg-bg-hover hover:border-border'
                 }`}
                 onClick={() => onSelect(port.name)}
+                onKeyDown={activateOnKeyboard}
+                role="button"
+                tabIndex={0}
               >
                 {/* 端口图标 */}
                 <div
@@ -179,6 +183,9 @@ export function PortPicker({
                     <div
                       className="flex items-center gap-0.5 w-fit p-0.5 rounded-md bg-bg-editor border border-border"
                       onClick={(e) => e.stopPropagation()}
+                      onKeyDown={activateOnKeyboard}
+                      role="button"
+                      tabIndex={0}
                     >
                       {(['cu', 'tty'] as const).map((v) => {
                         const entry = v === 'cu' ? group.cu! : group.tty!;
@@ -209,12 +216,12 @@ export function PortPicker({
                       {meta.description}
                     </div>
                   )}
-                  {(meta.product || meta.manufacturer) && (
+                  {(meta.product ?? meta.manufacturer) && (
                     <div className="text-[11px] text-text-secondary leading-snug break-words">
                       {[meta.product, meta.manufacturer].filter(Boolean).join(' · ')}
                     </div>
                   )}
-                  {(vidPid || meta.serial_number) && (
+                  {(vidPid ?? meta.serial_number) && (
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-mono text-text-secondary/70 leading-snug">
                       {vidPid && <span>{vidPid}</span>}
                       {meta.serial_number && (

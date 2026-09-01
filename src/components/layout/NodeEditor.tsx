@@ -7,8 +7,6 @@ import {
   MiniMap,
   useReactFlow,
   type NodeTypes,
-  type Edge,
-  type Node,
   Panel,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -19,12 +17,13 @@ import { notify } from '../../lib/tauri/notifications';
 import { useContextMenu } from '../../lib/hooks/useContextMenu';
 import { transitionStore } from '../../lib/utils/transitionStore';
 import { dockDrag, type WidgetDragSpec } from '../../lib/dockDrag';
-import type { WidgetConfig, MathOp, StrOp, FilterPresetKind } from '../../types';
+import type { MathOp, StrOp } from '../../types';
 import { isUnaryMathOp } from '../../types';
 import { WidgetNode } from '../nodes/WidgetNode';
 import { TransportNode } from '../nodes/TransportNode';
 import { ProtocolNode } from '../nodes/ProtocolNode';
 import { GlobalNodeProperties } from '../nodes/GlobalNodeProperties';
+import { WidgetProperties } from '../nodes/WidgetProperties';
 import { validateConnection } from '../../lib/utils/connectionRules';
 import { Maximize, LayoutGrid } from 'lucide-react';
 
@@ -73,7 +72,7 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
     if (flyToRequest.tabId !== tabId) return;
     const node = rfNodes.find((n) => n.id === flyToRequest.nodeId);
     if (node) {
-      reactFlow.setCenter(node.position.x, node.position.y, {
+      void reactFlow.setCenter(node.position.x, node.position.y, {
         duration: 400,
         zoom: 1.5,
       });
@@ -90,13 +89,13 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
       id: 'fit-view',
       label: t(lang, 'fitView'),
       icon: <Maximize />,
-      onClick: () => reactFlow.fitView({ padding: 0.2 }),
+      onClick: () => { void reactFlow.fitView({ padding: 0.2 }); },
     },
     {
       id: 'reset-zoom',
       label: t(lang, 'resetZoom'),
       icon: <Maximize />,
-      onClick: () => reactFlow.zoomTo(1),
+      onClick: () => { void reactFlow.zoomTo(1); },
     },
     { kind: 'separator' },
     {
@@ -113,7 +112,9 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
   // 按当前 tab 过滤节点: 本 tab 的 widget 节点 + 全部全局节点 (Transport/Protocol)
   const tabNodes = useMemo(
     () =>
-      rfNodes.filter((n) => n.data.tabId === tabId || n.data.global === true),
+      rfNodes
+        .filter((n) => n.data.tabId === tabId || n.data.global === true)
+        .map((n) => ({ ...n, dragHandle: '.node-drag-handle' })),
     [rfNodes, tabId]
   );
 
@@ -144,6 +145,11 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
   // 选中的全局节点 → 右侧属性面板
   const selectedGlobalNode = useMemo(
     () => tabNodes.find((n) => n.selected && n.data.global === true),
+    [tabNodes]
+  );
+
+  const selectedWidgetNode = useMemo(
+    () => tabNodes.find((n) => n.selected && n.type === 'widget'),
     [tabNodes]
   );
 
@@ -277,7 +283,9 @@ function NodeEditorInner({ tabId }: NodeEditorProps) {
           )}
         </Panel>
       </ReactFlow>
-      {selectedGlobalNode && <GlobalNodeProperties node={selectedGlobalNode} />}
+      {selectedGlobalNode
+        ? <GlobalNodeProperties node={selectedGlobalNode} />
+        : selectedWidgetNode && <WidgetProperties node={selectedWidgetNode} />}
     </div>
   );
 }

@@ -24,6 +24,7 @@ import { dockDrag } from '../../lib/dockDrag';
 import { formatAiKindError } from '../../lib/ai/aiErrors';
 import { checkAiProviderSettings } from '../../settings/aiProvider';
 import { t } from '../../i18n';
+import { activateOnKeyboard } from '../../lib/utils/a11y';
 import { AiMarkdown } from './AiMarkdown';
 import type { AiToolRun, AiViewItem } from '../../types';
 
@@ -187,7 +188,12 @@ function SessionMenu() {
       </button>
       {open && (
         <>
-          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <button
+            type="button"
+            aria-label={t(lang, 'aiSessionSwitch')}
+            className="fixed inset-0 z-20 border-0 bg-transparent"
+            onClick={() => setOpen(false)}
+          />
           <div className="absolute left-0 top-6 z-30 w-56 max-w-[80vw] rounded-lg border border-border-subtle bg-bg-panel-header shadow-lg py-1 flex flex-col animate-ai-menu-in">
             <div className="max-h-56 overflow-y-auto">
               {sorted.length === 0 && (
@@ -203,10 +209,12 @@ function SessionMenu() {
                     if (s.id !== activeSessionId) void switchSession(s.id);
                     setOpen(false);
                   }}
+                  onKeyDown={activateOnKeyboard}
+                  role="button"
+                  tabIndex={0}
                 >
                   {renamingId === s.id ? (
                     <input
-                      autoFocus
                       value={draft}
                       onChange={(e) => setDraft(e.target.value)}
                       onKeyDown={(e) => {
@@ -308,7 +316,7 @@ function McpDrawer({ onClose }: { onClose: () => void }) {
             <input
               type="checkbox"
               checked={srv.enabled}
-              onChange={(e) => setServerEnabled(srv.id, e.target.checked)}
+              onChange={(e) => { void setServerEnabled(srv.id, e.target.checked); }}
               className="accent-accent"
             />
             <span className="font-medium">{srv.name}</span>
@@ -319,7 +327,7 @@ function McpDrawer({ onClose }: { onClose: () => void }) {
             </span>
             <button
               className="ml-auto p-1 rounded text-text-secondary hover:bg-bg-hover hover:text-danger"
-              onClick={() => removeServer(srv.id)}
+              onClick={() => { void removeServer(srv.id); }}
               title={t(lang, 'aiDeleteServer')}
             >
               <Trash2 size={12} />
@@ -363,7 +371,7 @@ function McpDrawer({ onClose }: { onClose: () => void }) {
           <button
             className="px-2 py-0.5 rounded bg-accent text-accent-foreground disabled:opacity-40 flex items-center gap-1"
             disabled={!canAdd}
-            onClick={onAdd}
+            onClick={() => { void onAdd(); }}
           >
             <Plus size={11} />
             {t(lang, 'aiAddServer')}
@@ -431,10 +439,10 @@ export function AiChatPanel() {
   // 打开面板: 拉取会话/工具/状态, 并按需自启本地 MCP server (opt-in 语义);
   // 首次使用 (无任何会话) 时自动建一个默认会话
   useEffect(() => {
-    refreshServerStatus();
-    refreshTools();
+    void refreshServerStatus();
+    void refreshTools();
     if (!useAiChatStore.getState().serverRunning) {
-      startLocalServer();
+      void startLocalServer();
     }
     void (async () => {
       await refreshSessions();

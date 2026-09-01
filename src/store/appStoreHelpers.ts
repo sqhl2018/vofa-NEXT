@@ -28,9 +28,9 @@ import {
 } from '../lib/utils/protocolSchema';
 import { getWidgetPorts } from '../components/nodes/WidgetPorts';
 import {
-  normalizeModel3DConfig,
+  normalizeWidgetConfig,
+  widgetInputValue,
 } from '../lib/utils/createWidget';
-import { normalizeCommandConfig } from '../lib/utils/commandFrames';
 import type {
   DataTab,
   WidgetConfig,
@@ -98,9 +98,9 @@ export function defaultTransportConfig(kind: TransportConfig['kind']): Transport
     case 'TestData':
       return { kind: 'TestData', params: { channels: 4, sample_rate: 100, signal: 'Sine' } };
     case 'Slcan':
-      return { kind: 'Slcan', params: { port_name: '', baud_rate: 115200, can_bitrate: 'bps500k' } };
+      return { kind: 'Slcan', params: { port_name: '', baud_rate: 115200, can_bitrate: 'Bps500k' } };
     case 'CandleLight':
-      return { kind: 'CandleLight', params: { bus: 1, address: 0, can_bitrate: 'bps500k', channel: 0 } };
+      return { kind: 'CandleLight', params: { bus: 1, address: 0, can_bitrate: 'Bps500k', channel: 0 } };
   }
 }
 
@@ -376,13 +376,7 @@ function jsonDeepEqual(a: unknown, b: unknown): boolean {
 export function widgetFromRecord(rec: WidgetRecordPayload): WidgetConfig | null {
   if (!(rec.kind in KNOWN_WIDGET_KINDS)) return null;
   const params = (rec.params ?? {});
-  if (rec.kind === 'Command') {
-    return { kind: 'Command', params: normalizeCommandConfig(params as never) };
-  }
-  if (rec.kind === 'Model3D') {
-    return { kind: 'Model3D', params: normalizeModel3DConfig(params) };
-  }
-  return { kind: rec.kind, params } as unknown as WidgetConfig;
+  return normalizeWidgetConfig({ kind: rec.kind, params } as unknown as WidgetConfig);
 }
 
 /// 记录 → 画布可渲染的 WidgetConfig (未知 kind 按原样落为占位控件 —
@@ -471,7 +465,7 @@ export function adoptSourceGraph(event: GraphSourceEventPayload): void {
       if (existing) {
         const cur = existing.data?.widget as WidgetConfig | undefined;
         const configChanged =
-          !cur || cur.kind !== widget.kind || !jsonDeepEqual(cur.params, widget.params);
+          cur?.kind !== widget.kind || !jsonDeepEqual(cur.params, widget.params);
         const posChanged =
           pos != null && (existing.position.x !== pos.x || existing.position.y !== pos.y);
         if (configChanged || posChanged) {
@@ -599,7 +593,15 @@ export function adoptSourceGraph(event: GraphSourceEventPayload): void {
       t.id === event.tab_id ? { ...t, widgets: ordered } : t
     );
   }
-  useAppStore.setState({ rfNodes, rfEdges: [...others, ...adopted], widgets, controlTabs });
+  const dataTabs = state.dataTabs.map((tab) => {
+    const owner = tab.widgetId ? widgets.find((widget) => widget.params.id === tab.widgetId) : undefined;
+    return owner ? { ...tab, name: owner.params.label } : tab;
+  });
+  useAppStore.setState({ rfNodes, rfEdges: [...others, ...adopted], widgets, controlTabs, dataTabs });
+  for (const widget of widgets) {
+    const value = widgetInputValue(widget);
+    if (value !== null) useAppStore.getState().setInputValue(widget.params.id, value);
+  }
 }
 
 // ---- Transport 协议热更新 ----
@@ -740,7 +742,7 @@ export function traceTransportSource(nodeId: string, edges: Edge[], nodes: Node[
 /// 覆盖 (控件 tab / 数据面板 / widget 配置 / 画布 / 边 / 版本基线),
 /// 后端启动时已完成逐 tab 重编译, 不再初始同步。
 export async function hydrateWorkspaceFromBackend(): Promise<boolean> {
-  let snap: WorkspaceSnapshotPayload | null = null;
+  let snap: WorkspaceSnapshotPayload | null;
   try {
     snap = await api.workspaceGet();
   } catch {
@@ -805,6 +807,11 @@ export async function hydrateWorkspaceFromBackend(): Promise<boolean> {
   ] as DataTab[]) {
     if (!dataTabs.some((t) => t.id === ft.id)) dataTabs.push(ft);
   }
+  for (const tab of dataTabs) {
+    if (!tab.widgetId) continue;
+    const owner = widgets.find((widget) => widget.params.id === tab.widgetId);
+    if (owner) tab.name = owner.params.label;
+  }
 
   useAppStore.setState({
     controlTabs,
@@ -816,6 +823,10 @@ export async function hydrateWorkspaceFromBackend(): Promise<boolean> {
     rfEdges: edges,
     graphVersion: snap.version ?? null,
   });
+  for (const widget of widgets) {
+    const value = widgetInputValue(widget);
+    if (value !== null) useAppStore.getState().setInputValue(widget.params.id, value);
+  }
   return true;
 }
 
@@ -834,5 +845,5 @@ export function syncWorkspaceMeta(): void {
     closable: t.closable,
     ...(t.widgetId != null ? { widget_id: t.widgetId } : {}),
   }));
-  void api.workspaceSetTabs(tabs, dataTabs).catch(() => {});
+  void api.workspaceSetTabs(tabs, dataTabs).catch(() => { return undefined; });
 }

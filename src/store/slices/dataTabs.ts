@@ -2,6 +2,7 @@ import { t } from '../../i18n';
 import type { DataTab, WidgetConfig } from '../../types';
 import { useAppStore } from '../appStore';
 import { widgetToTab } from '../../lib/utils/widgetTab';
+import type { AppSlice } from './types';
 
 export interface DataTabSlice {
   dataTabs: DataTab[];
@@ -22,7 +23,7 @@ export interface DataTabSlice {
   addWidgetTab: (widget: WidgetConfig) => void;
 }
 
-export function createDataTabSlice(set: any, get: any): DataTabSlice {
+export const createDataTabSlice: AppSlice<DataTabSlice> = (set, get) => {
   return {
     dataTabs: [
       { id: 'compile-errors-fixed', type: 'compile-errors', name: 'Compile Errors', closable: false },
@@ -31,13 +32,13 @@ export function createDataTabSlice(set: any, get: any): DataTabSlice {
     activeDataTabId: 'compile-results-fixed',
 
     addDataTab: (tab) =>
-      set((s: any) => ({
+      set((s) => ({
         dataTabs: [...s.dataTabs, tab],
         activeDataTabId: tab.id,
       })),
 
     removeDataTab: (tabId) =>
-      set((s: any) => {
+      set((s) => {
         const tab = s.dataTabs.find((t: DataTab) => t.id === tabId);
         if (!tab?.closable) return s;
         const remaining = s.dataTabs.filter((t: DataTab) => t.id !== tabId);

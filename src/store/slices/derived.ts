@@ -6,6 +6,8 @@
 /// - Tauri 命令 `update_tab_graph` 的响应 (节点全量替换)
 /// - `graph:derived` 事件 (按节点级别差分推送)
 
+import type { AppSlice } from './types';
+
 export type DerivedPortDomain = 'F32' | 'Bytes' | 'String';
 
 export interface NodeDerivedPort {
@@ -41,25 +43,25 @@ export interface DerivedSlice {
   resetDerived: () => void;
 }
 
-export function createDerivedSlice(set: any, _get: any): DerivedSlice {
+export const createDerivedSlice: AppSlice<DerivedSlice> = (set, _get) => {
   return {
     derivedPorts: {},
 
     setDerived: (nodes) =>
-      set((s: any) => {
+      set((s) => {
         const next = { ...s.derivedPorts };
         for (const n of nodes) {
           next[n.node_id] = {
             ports: n.ports,
             effective_channels:
-              n.effective_channels == null ? undefined : n.effective_channels,
+              n.effective_channels ?? undefined,
           };
         }
         return { derivedPorts: next };
       }),
 
     removeDerived: (nodeIds) =>
-      set((s: any) => {
+      set((s) => {
         if (nodeIds.length === 0) return {};
         const next = { ...s.derivedPorts };
         for (const id of nodeIds) delete next[id];

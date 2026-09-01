@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import { withHistoryOp, type HistoryTarget } from '../historyStore';
+import type { AppSlice } from './types';
 
 /// 页签级操作的目标语义 (中性徽章)
 const tabTarget = (): HistoryTarget => ({ kind: 'tab' });
@@ -13,7 +14,7 @@ export interface ControlTabSlice {
   renameControlTab: (tabId: string, name: string) => void;
 }
 
-export function createControlTabSlice(set: any, get: any): ControlTabSlice {
+export const createControlTabSlice: AppSlice<ControlTabSlice> = (set, get) => {
   return {
     controlTabs: [{ id: 'default', name: 'Tab 1', widgets: [] }],
     activeControlTabId: 'default',
@@ -21,26 +22,26 @@ export function createControlTabSlice(set: any, get: any): ControlTabSlice {
     addControlTab: (name) =>
       withHistoryOp({ opKey: 'opAddControlTab', target: tabTarget() }, () => {
         const id = nanoid(8);
-        set((s: any) => {
-          const tabName = name || `Tab ${s.controlTabs.length + 1}`;
+        set((s) => {
+          const tabName = name ?? `Tab ${s.controlTabs.length + 1}`;
           return {
             controlTabs: [...s.controlTabs, { id, name: tabName, widgets: [] }],
             activeControlTabId: id,
           };
         });
-        get().syncTabGraph(id);
+        void get().syncTabGraph(id);
       }),
 
     removeControlTab: (tabId) =>
       withHistoryOp(
         {
           opKey: 'opRemoveControlTab',
-          detailText: get().controlTabs.find((t: any) => t.id === tabId)?.name,
+          detailText: get().controlTabs.find((t) => t.id === tabId)?.name,
           target: tabTarget(),
         },
         () => {
-          set((s: any) => {
-            const remaining = s.controlTabs.filter((t: any) => t.id !== tabId);
+          set((s) => {
+            const remaining = s.controlTabs.filter((t) => t.id !== tabId);
             if (remaining.length === 0) {
               const defaultTab = { id: 'default', name: 'Tab 1', widgets: [] };
               return {
@@ -49,15 +50,15 @@ export function createControlTabSlice(set: any, get: any): ControlTabSlice {
               };
             }
             const tabNodeIds = new Set(
-              s.rfNodes.filter((n: any) => n.data.tabId === tabId).map((n: any) => n.id)
+              s.rfNodes.filter((n) => n.data.tabId === tabId).map((n) => n.id)
             );
             return {
               controlTabs: remaining,
               activeControlTabId:
                 s.activeControlTabId === tabId ? remaining[0].id : s.activeControlTabId,
               // 全局节点 (data.global) 不属于任何 tab, 不随 tab 删除
-              rfNodes: s.rfNodes.filter((n: any) => n.data.tabId !== tabId),
-              rfEdges: s.rfEdges.filter((e: any) => !tabNodeIds.has(e.source) && !tabNodeIds.has(e.target)),
+              rfNodes: s.rfNodes.filter((n) => n.data.tabId !== tabId),
+              rfEdges: s.rfEdges.filter((e) => !tabNodeIds.has(e.source) && !tabNodeIds.has(e.target)),
             };
           });
           // 全局节点 (Transport/Protocol) 在后端全局表中归属最后提交它的 tab:
@@ -65,7 +66,7 @@ export function createControlTabSlice(set: any, get: any): ControlTabSlice {
           // 再移除被删 tab 的图 — 否则后端的 retain 清理会连带删掉全局节点。
           // 必须等存活 tab 同步落地后再 remove (先后顺序即正确性本身)
           const syncs = get()
-            .controlTabs.map((t: any) => get().syncTabGraph(t.id) as Promise<unknown>);
+            .controlTabs.map((t) => get().syncTabGraph(t.id) as Promise<unknown>);
           void Promise.all(syncs).then(() => get().removeTabGraph(tabId));
         }
       ),
@@ -76,8 +77,8 @@ export function createControlTabSlice(set: any, get: any): ControlTabSlice {
       withHistoryOp(
         { opKey: 'opRenameControlTab', detailText: name, target: tabTarget() },
         () =>
-        set((s: any) => ({
-          controlTabs: s.controlTabs.map((t: any) =>
+        set((s) => ({
+          controlTabs: s.controlTabs.map((t) =>
             t.id === tabId ? { ...t, name } : t
           ),
         }))

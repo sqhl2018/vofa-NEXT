@@ -69,7 +69,25 @@ export default tseslint.config(
       ...jsxA11y.configs.recommended.rules,
       'react-refresh/only-export-components': [
         'error',
-        { allowConstantExport: true },
+        {
+          allowConstantExport: true,
+          // 这些导出是同模块组件所需的纯工具、类型上下文或 R3F 配置；
+          // 明确列出以保持 Fast Refresh 的其余约束有效。
+          allowExportNames: [
+            'BITRATE_PRESETS', 'BLOCK_TYPE_CONFIG', 'CHECKSUM_COVER_OPTIONS',
+            'CHECKSUM_OPTIONS', 'CHECKSUM_POSITION_OPTIONS', 'CanvasErrorTooltip',
+            'CompileDot', 'CustomWidget', 'FIELD_TYPE_OPTIONS', 'FRAME_DECODER_ADDABLE_TYPES',
+            'FRAME_EXAMPLES', 'GROUP_SIZE', 'HISTORY_KEY', 'HISTORY_MAX', 'HeaderBytes',
+            'IdLoadDistribution', 'MeasureItem', 'NumericPortStatus', 'PillRect', 'ROW_HEIGHT',
+            'SlidingPill', 'THRESHOLD_PRESETS', 'WINDOW_PRESETS', 'WidgetCard',
+            'WidgetEmbeddedContext', 'blockSummary', 'byteToAscii', 'byteToHex',
+            'compileErrorMessage', 'directionColorClass', 'directionSymbol', 'evalCustomWidgetDef',
+            'formatBitrate', 'formatFps', 'formatFreq', 'formatNumericValue', 'formatPercent',
+            'formatTime', 'getCompileStatus', 'getOutputPortNames', 'hexColorClass',
+            'isPrintable', 'isWindowsPlatform', 'loadColor', 'loadHistory',
+            'numericValueOr', 'saveHistory', 'useCanvasNodeError', 'useSlidingPill',
+          ],
+        },
       ],
 
       // 严格 TS 风格
@@ -126,6 +144,68 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       'no-console': 'off',
+    },
+  },
+
+  // 8. 严格规则：所有诊断均阻断 lint。
+  {
+    files: ['**/*.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/await-thenable': 'error',
+      '@typescript-eslint/ban-ts-comment': 'error',
+      '@typescript-eslint/no-base-to-string': 'error',
+      '@typescript-eslint/no-empty-function': 'error',
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/no-floating-promises': 'error',
+      '@typescript-eslint/no-implied-eval': 'error',
+      '@typescript-eslint/no-misused-promises': 'error',
+      '@typescript-eslint/no-redundant-type-constituents': 'error',
+      '@typescript-eslint/no-unsafe-argument': 'error',
+      '@typescript-eslint/no-unsafe-assignment': 'error',
+      '@typescript-eslint/no-unsafe-call': 'error',
+      '@typescript-eslint/no-unsafe-member-access': 'error',
+      '@typescript-eslint/no-unsafe-return': 'error',
+      '@typescript-eslint/only-throw-error': 'error',
+      '@typescript-eslint/prefer-for-of': 'error',
+      '@typescript-eslint/prefer-nullish-coalescing': 'error',
+      '@typescript-eslint/prefer-optional-chain': 'error',
+      '@typescript-eslint/require-await': 'error',
+      '@typescript-eslint/unbound-method': 'error',
+      'no-fallthrough': 'error',
+      'no-useless-assignment': 'error',
+      'preserve-caught-error': 'error',
+    },
+  },
+  {
+    files: ['src/**/*.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/consistent-type-imports': 'error',
+      '@typescript-eslint/no-unused-vars': 'error',
+      'jsx-a11y/anchor-is-valid': 'error',
+      'jsx-a11y/click-events-have-key-events': 'error',
+      'jsx-a11y/label-has-associated-control': 'error',
+      'jsx-a11y/no-autofocus': 'error',
+      'jsx-a11y/no-noninteractive-element-interactions': 'error',
+      'jsx-a11y/no-noninteractive-tabindex': 'error',
+      'jsx-a11y/no-static-element-interactions': 'error',
+      'no-console': 'error',
+      'react-hooks/exhaustive-deps': 'error',
+      // React Three Fiber 使用 JSX 属性映射 Three.js 对象；这些并非 DOM 属性。
+      'react/no-unknown-property': [
+        'error',
+        {
+          ignore: [
+            'args',
+            'emissive',
+            'emissiveIntensity',
+            'intensity',
+            'object',
+            'position',
+            'rotation',
+            'transparent',
+          ],
+        },
+      ],
     },
   },
 );

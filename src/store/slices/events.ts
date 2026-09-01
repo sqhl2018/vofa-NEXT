@@ -17,6 +17,10 @@ import { useAppStore } from '../appStore';
 import type { GraphSourceEventPayload } from '../../lib/tauri/tauri';
 import type { ConnectionState, TransportStats } from '../../types';
 import { EMPTY_NODE_STATS } from './connection';
+import type { AppSlice } from './types';
+import type { GraphStateSlice } from './graphState';
+import type { GraphDerivedPayload } from './derived';
+import type { GraphCompileEvent } from './compileStatus';
 
 let unlistenFns: UnlistenFn[] = [];
 let textOutputSub: { cancel: () => void } | null = null;
@@ -98,14 +102,14 @@ function parseChannelsDetectedEvent(
 /// graph:derived payload 解析 — 后端 update_tab_graph/remove_tab_graph emit;
 /// 契约为 `{ nodes: [{ node_id, ports: [{ name, domain }], effective_channels? }] }`。
 /// 与 store/slices/derived.ts 的 GraphDerivedPayload 同步 (单一契约, 双向核对)。
-function parseGraphDerivedEvent(payload: unknown): import('./derived').GraphDerivedPayload | null {
+function parseGraphDerivedEvent(payload: unknown): GraphDerivedPayload | null {
   if (
     payload &&
     typeof payload === 'object' &&
     'nodes' in payload &&
     Array.isArray((payload).nodes)
   ) {
-    return payload as import('./derived').GraphDerivedPayload;
+    return payload as GraphDerivedPayload;
   }
   console.warn('[events] graph:derived payload 契约不符:', payload);
   return null;
@@ -115,7 +119,7 @@ function parseGraphDerivedEvent(payload: unknown): import('./derived').GraphDeri
 /// 契约为 `{ tab_id, state, queued_seq, report }` (state: pending|compiling|ok|error).
 function parseGraphCompileEvent(
   payload: unknown,
-): import('./compileStatus').GraphCompileEvent | null {
+): GraphCompileEvent | null {
   if (
     payload &&
     typeof payload === 'object' &&
@@ -123,7 +127,7 @@ function parseGraphCompileEvent(
     'state' in payload &&
     'queued_seq' in payload
   ) {
-    return payload as import('./compileStatus').GraphCompileEvent;
+    return payload as GraphCompileEvent;
   }
   console.warn('[events] graph:compile payload 契约不符:', payload);
   return null;
@@ -151,10 +155,10 @@ export interface EventSlice {
   initEventListeners: () => Promise<() => void>;
 }
 
-export function createEventSlice(set: any, get: any): EventSlice {
+export const createEventSlice: AppSlice<EventSlice> = (set, get) => {
   /// 数据源对账: 主波形源 = 第一个 Protocol 节点。RawData 由可见视图自行订阅。
   const reconcileSources = () => {
-    const nodes: any[] = get().rfNodes;
+    const nodes = get().rfNodes;
     const firstProtocol = nodes.find((n) => n.type === 'protocol' && isGlobalNode(n));
     const primary = firstProtocol?.id ?? null;
     if (primary !== getPrimaryWaveformSource()) setPrimaryWaveformSource(primary);
@@ -168,7 +172,7 @@ export function createEventSlice(set: any, get: any): EventSlice {
       const unlistenState = await listen<unknown>('transport:state', (event) => {
         const parsed = parseStateEvent(event.payload);
         if (!parsed) return;
-        set((s: any) => ({
+        set((s) => ({
           connectionStates: { ...s.connectionStates, [parsed.nodeId]: parsed.state },
         }));
       });
@@ -177,7 +181,7 @@ export function createEventSlice(set: any, get: any): EventSlice {
         const parsed = parseRxEvent(event.payload);
         if (!parsed) return;
         const st = parsed.stats;
-        set((s: any) => {
+        set((s) => {
           const prev = s.nodeStats[parsed.nodeId] ?? EMPTY_NODE_STATS;
           return {
             nodeStats: {
@@ -203,8 +207,8 @@ export function createEventSlice(set: any, get: any): EventSlice {
         // 写 detectedChannels (后端单一权威; UI 派生端口表 / 通道数随之刷新)
         // 命中节点 → 计算 effective, 更新节点 data.channels 并重同步全 tab 图
         // (ProtocolSource 的 ch 端口数随之变化)
-        set((s: any) => {
-          const node = s.rfNodes.find((n: any) => n.id === nodeId && n.type === 'protocol');
+        set((s) => {
+          const node = s.rfNodes.find((n) => n.id === nodeId && n.type === 'protocol');
           if (!node) {
             // 节点已删 (前端未同步移除) — 清理孤儿 key 避免后续误用
             if (nodeId in s.detectedChannels) {
@@ -215,13 +219,13 @@ export function createEventSlice(set: any, get: any): EventSlice {
           }
           const config = (node.data as { config: { channels?: number | null } }).config;
           const manual = config?.channels ?? null;
-          const effective = manual != null ? manual : channels;
-          const rfNodes = s.rfNodes.map((n: any) =>
+          const effective = manual ?? channels;
+          const rfNodes = s.rfNodes.map((n) =>
             n.id === nodeId ? { ...n, data: { ...n.data, channels: effective } } : n
           );
           return { detectedChannels: { ...s.detectedChannels, [nodeId]: channels }, rfNodes };
         });
-        get().controlTabs.forEach((tab: any) => get().syncTabGraph(tab.id));
+        get().controlTabs.forEach((tab) => { void get().syncTabGraph(tab.id); });
       });
 
       // graph:derived — 后端 update_tab_graph / remove_tab_graph 提交后 emit;
@@ -264,10 +268,10 @@ export function createEventSlice(set: any, get: any): EventSlice {
         unlistenSource,
       ];
 
-      const spectrumCoalescer = makeRafCoalescer<Record<string, unknown>>(
+      const spectrumCoalescer = makeRafCoalescer<GraphStateSlice['spectrumResults']>(
         (v) => set({ spectrumResults: v })
       );
-      const textOutputCoalescer = makeRafCoalescer<Record<string, unknown>>(
+      const textOutputCoalescer = makeRafCoalescer<GraphStateSlice['customTextOutputs']>(
         (v) => set({ customTextOutputs: v })
       );
 
@@ -322,7 +326,7 @@ export function createEventSlice(set: any, get: any): EventSlice {
 
       // 工作区水合: 后端有持久化工作区时以权威快照覆盖本地 (图已在启动恢复时
       // 重编译, 不再初始同步); 否则按默认流程把空图推给后端
-      let restored = false;
+      let restored: boolean;
       try {
         restored = await hydrateWorkspaceFromBackend();
       } catch {
@@ -330,7 +334,7 @@ export function createEventSlice(set: any, get: any): EventSlice {
       }
       set({ workspaceReady: true, workspaceRestored: restored });
       if (!restored) {
-        get().controlTabs.forEach((tab: any) => get().syncTabGraph(tab.id));
+        get().controlTabs.forEach((tab) => { void get().syncTabGraph(tab.id); });
       }
 
       return () => {

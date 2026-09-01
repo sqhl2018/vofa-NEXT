@@ -3,6 +3,7 @@ import { notify } from '../../lib/tauri/notifications';
 import { nodeError } from '../../lib/tauri/errorGuidance';
 import { t } from '../../i18n';
 import type { ProtocolConfig, ProtocolSchema } from '../../types';
+import type { AppSlice } from './types';
 import { getEffectiveChannels, type ProtocolNodeData } from '../appStoreHelpers';
 import { schemaFromProtocolConfig, schemaPortNames } from '../../lib/utils/protocolSchema';
 import {
@@ -33,7 +34,7 @@ export interface ProtocolSlice {
   setProtocolNodeSchema: (nodeId: string, schema: ProtocolSchema) => void;
 }
 
-export function createProtocolSlice(set: any, get: any): ProtocolSlice {
+export const createProtocolSlice: AppSlice<ProtocolSlice> = (set, get) => {
   return {
     detectedChannels: {},
 
@@ -43,11 +44,11 @@ export function createProtocolSlice(set: any, get: any): ProtocolSlice {
       const detected = get().detectedChannels[nodeId] ?? null;
       const effective = getEffectiveChannels(config, detected);
       // schema 联动: 预设 (或缺失) → 按新 config 工厂重建; custom → 保留用户块
-      const prevNode = get().rfNodes.find((n: any) => n.id === nodeId);
+      const prevNode = get().rfNodes.find((n) => n.id === nodeId);
       const prevSchema = prevNode ? (prevNode.data as ProtocolNodeData).schema : undefined;
       const schema = prevSchema?.preset === 'custom' ? prevSchema : schemaFromProtocolConfig(config);
-      set((s: any) => ({
-        rfNodes: s.rfNodes.map((n: any) =>
+      set((s) => ({
+        rfNodes: s.rfNodes.map((n) =>
           n.id === nodeId && n.type === 'protocol'
             ? { ...n, data: { ...n.data, config, channels: effective, schema, label: config.kind } }
             : n
@@ -64,14 +65,14 @@ export function createProtocolSlice(set: any, get: any): ProtocolSlice {
       try {
         await api.setProtocol(nodeId, config);
         if ((config.kind === 'JustFloat' || config.kind === 'FireWater') && config.channels != null) {
-          set((s: any) => ({ detectedChannels: { ...s.detectedChannels, [nodeId]: null } }));
+          set((s) => ({ detectedChannels: { ...s.detectedChannels, [nodeId]: null } }));
         }
       } catch (e) {
         const lang = get().lang;
         notify.error(t(lang, 'notifSetProtocolFailed'), nodeError(lang, e), { source: 'setProtocol' });
       }
       // 3. 全 tab 图同步
-      get().controlTabs.forEach((tab: any) => get().syncTabGraph(tab.id));
+      get().controlTabs.forEach((tab) => { void get().syncTabGraph(tab.id); });
     },
 
     setProtocolNodeConvertTo: (nodeId, convertTo) =>
@@ -82,21 +83,21 @@ export function createProtocolSlice(set: any, get: any): ProtocolSlice {
           target: protocolTarget(),
         },
         () => {
-          set((s: any) => ({
-            rfNodes: s.rfNodes.map((n: any) =>
+          set((s) => ({
+            rfNodes: s.rfNodes.map((n) =>
               n.id === nodeId && n.type === 'protocol'
                 ? { ...n, data: { ...n.data, convertTo } }
                 : n
             ),
           }));
-          get().controlTabs.forEach((tab: any) => get().syncTabGraph(tab.id));
+          get().controlTabs.forEach((tab) => { void get().syncTabGraph(tab.id); });
         }
       ),
 
     setProtocolNodeSchema: (nodeId, schema) =>
       withHistoryOp({ opKey: 'opUpdateProtocolSchema', target: protocolTarget() }, () => {
-        set((s: any) => ({
-          rfNodes: s.rfNodes.map((n: any) => {
+        set((s) => ({
+          rfNodes: s.rfNodes.map((n) => {
             if (n.id !== nodeId || n.type !== 'protocol') return n;
             // custom 下节点端口数跟随 decode 块派生 (摘要显示用; 端口名以 protocolPortNames 为准)
             const channels = schema.preset === 'custom'
@@ -106,7 +107,7 @@ export function createProtocolSlice(set: any, get: any): ProtocolSlice {
           }),
         }));
         // 图同步为权威 (NodeKind::Protocol.schema 随图下发, 引擎按 schema 重建)
-        get().controlTabs.forEach((tab: any) => get().syncTabGraph(tab.id));
+        get().controlTabs.forEach((tab) => { void get().syncTabGraph(tab.id); });
       }),
   };
 }

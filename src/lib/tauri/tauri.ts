@@ -11,6 +11,7 @@ import type {
   DecoderBlock,
   FrameDecoderManualResult,
   InputFormat,
+  LoopbackResult,
   McpServerConfig,
   McpServerStatus,
   McpToolInfo,
@@ -19,6 +20,7 @@ import type {
   ProtocolSchema,
   TransportConfig,
   TransportStats,
+  CommandFrame,
   TriggerMatchResult,
   TriggerRule,
   WidgetBinding,
@@ -132,7 +134,7 @@ export async function closeTauriChannel<T>(
     ch.cleanupCallback();
   }
   // 3. 清空 handler
-  channel.onmessage = () => {};
+  channel.onmessage = () => { return undefined; };
 }
 
 /// 数据管道性能配置 (snake_case, 与后端 PipelineConfig 对应)
@@ -229,7 +231,7 @@ export const api = {
 
   /// 协议回环: 发送字节并立即捕获指定 Protocol 节点的解析结果
   sendAndCapture: (nodeId: string, protocolNode: string, data: number[]) =>
-    invoke<import('../../types').LoopbackResult>('send_and_capture', {
+    invoke<LoopbackResult>('send_and_capture', {
       nodeId,
       protocolNode,
       data,
@@ -244,7 +246,7 @@ export const api = {
   /// 命令发送帧字节打包 — 后端 `compute_command_frame_bytes` IPC 单一权威
   /// (后端 cmd_buffer/src/command_frame.rs::compute_frame_bytes, 与前端纯预览分离)
   computeFrameBytes: (
-    frame: import('../../types').CommandFrame,
+    frame: CommandFrame,
     inputs: Record<string, number>,
   ) =>
     invoke<{

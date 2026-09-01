@@ -10,6 +10,7 @@
 /// - `pendingTabs` / `errorTabs`: 按状态分组的 tab id 集合 (供 tab 角标批量读取)
 
 import type { CompileReport } from './compileError';
+import type { AppSlice } from './types';
 
 export type TabCompileState = 'ok' | 'pending' | 'compiling' | 'error';
 
@@ -42,7 +43,7 @@ export interface CompileStatusSlice {
   clearCanvasHighlight: () => void;
 }
 
-export function createCompileStatusSlice(set: any, _get: any): CompileStatusSlice {
+export const createCompileStatusSlice: AppSlice<CompileStatusSlice> = (set, _get) => {
   return {
     tabStates: {},
     tabErrors: {},
@@ -56,7 +57,7 @@ export function createCompileStatusSlice(set: any, _get: any): CompileStatusSlic
     canvasHighlight: null,
 
     setCompileEvent: (e) =>
-      set((s: any) => {
+      set((s) => {
         const tabId = e.tab_id;
         const nextStates = { ...s.tabStates, [tabId]: e.state };
         const nextErrors = { ...s.tabErrors };
@@ -76,7 +77,7 @@ export function createCompileStatusSlice(set: any, _get: any): CompileStatusSlic
           .filter(([, v]) => v === 'pending' || v === 'compiling')
           .map(([k]) => k);
         // errorTabs: 累积式 — 一旦进入 error 的 tabId 永不退出, 除非 resetStatus
-        const errorSet = new Set(s.errorTabs);
+        const errorSet = new Set<string>(s.errorTabs);
         if (e.state === 'error') errorSet.add(tabId);
         const errors = Array.from(errorSet);
         return {
@@ -92,7 +93,7 @@ export function createCompileStatusSlice(set: any, _get: any): CompileStatusSlic
       }),
 
     resetStatus: (tabId) =>
-      set((s: any) => {
+      set((s) => {
         if (tabId === undefined) {
           return {
             tabStates: {},
@@ -130,10 +131,10 @@ export function createCompileStatusSlice(set: any, _get: any): CompileStatusSlic
           anyCompiling: pending.length > 0,
           // 若当前 fly-to 请求指向已删 tab, 同步清掉避免孤儿
           flyToRequest:
-            s.flyToRequest && s.flyToRequest.tabId === tabId ? null : s.flyToRequest,
+            s.flyToRequest?.tabId === tabId ? null : s.flyToRequest,
           // 持久高亮: tab 整体删除时同步清掉
           canvasHighlight:
-            s.canvasHighlight && s.canvasHighlight.tabId === tabId ? null : s.canvasHighlight,
+            s.canvasHighlight?.tabId === tabId ? null : s.canvasHighlight,
         };
       }),
 

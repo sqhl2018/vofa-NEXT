@@ -53,7 +53,7 @@ export function CanLoadView() {
     api
       .getCurrentCanBitrate(canNodeId)
       .then(([bps, source]) => setDetectedBitrate({ bps, source }))
-      .catch(() => {});
+      .catch(() => { return undefined; });
   }, [transportConfig, canNodeId]);
 
   // 设置窗口大小时同步后端
@@ -76,7 +76,7 @@ export function CanLoadView() {
   useEffect(() => {
     if (!canNodeId) return;
     const effectiveBitrate = autoBitrate ? null : bitrateOverride;
-    api.getCanLoadStats(canNodeId, effectiveBitrate).then(setSnapshot).catch(() => {});
+    api.getCanLoadStats(canNodeId, effectiveBitrate).then(setSnapshot).catch(() => { return undefined; });
   }, [autoBitrate, bitrateOverride, canNodeId]);
 
   const handleClear = () => {
@@ -189,7 +189,7 @@ export function CanLoadView() {
 
         <button
           className="flex items-center gap-1 px-2 py-1 text-text-secondary hover:text-text-primary hover:bg-bg-hover rounded transition-colors disabled:opacity-50"
-          onClick={handleExport}
+          onClick={() => { void handleExport(); }}
           disabled={exporting || !snapshot}
           title={t(lang, 'canLoadExport')}
         >
@@ -233,7 +233,7 @@ export function CanLoadView() {
           selectedId={selectedId}
           onSelectId={(id, extended) => {
             setSelectedId((cur) =>
-              cur && cur.id === id && cur.extended === extended ? null : { id, extended }
+              cur?.id === id && cur.extended === extended ? null : { id, extended }
             );
           }}
         />

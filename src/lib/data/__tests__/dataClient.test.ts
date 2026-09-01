@@ -60,7 +60,7 @@ describe('port sample client backpressure and lifecycle', () => {
   it('restarts after an in-flight unsubscribe and ignores the stale worker result', async () => {
     const { getPortSampleStore } = await import('../dataClient');
     const store = getPortSampleStore('protocol-restart', 'ch1');
-    const firstUnsubscribe = store.subscribe(() => {});
+    const firstUnsubscribe = store.subscribe(() => { return undefined; });
     const firstChannel = subscribeCalls()[0][1].onEvent as {
       onmessage: (buffer: ArrayBuffer) => void;
     };
@@ -68,7 +68,7 @@ describe('port sample client backpressure and lifecycle', () => {
     const stalePost = MockWorker.instance.posts[0];
 
     firstUnsubscribe();
-    const secondUnsubscribe = store.subscribe(() => {});
+    const secondUnsubscribe = store.subscribe(() => { return undefined; });
     expect(subscribeCalls()).toHaveLength(2);
     const secondChannel = subscribeCalls()[1][1].onEvent as {
       onmessage: (buffer: ArrayBuffer) => void;
@@ -88,7 +88,7 @@ describe('port sample client backpressure and lifecycle', () => {
   it('keeps only one in-flight and one replaceable pending decode per topic', async () => {
     const { getPortSampleStore } = await import('../dataClient');
     const store = getPortSampleStore('protocol-burst', 'ch2');
-    const unsubscribe = store.subscribe(() => {});
+    const unsubscribe = store.subscribe(() => { return undefined; });
     const channel = subscribeCalls()[0][1].onEvent as {
       onmessage: (buffer: ArrayBuffer) => void;
     };
@@ -108,7 +108,7 @@ describe('port sample client backpressure and lifecycle', () => {
   it('restarts the channel and rejects a pre-reconnect worker result when resetting a source', async () => {
     const { getPortSampleStore, resetPortSampleStoresForSource } = await import('../dataClient');
     const store = getPortSampleStore('protocol-reset', 'ch3');
-    const unsubscribe = store.subscribe(() => {});
+    const unsubscribe = store.subscribe(() => { return undefined; });
     const firstChannel = subscribeCalls()[0][1].onEvent as {
       onmessage: (buffer: ArrayBuffer) => void;
     };
@@ -130,5 +130,21 @@ describe('port sample client backpressure and lifecycle', () => {
     MockWorker.instance.respond(currentPost, 2);
     expect(store.getSnapshot().rows[0]?.value).toBe(2);
     unsubscribe();
+  });
+});
+
+describe('port sample store facade identity', () => {
+  it('returns the same facade object for the same port key', async () => {
+    const { getPortSampleStore } = await import('../dataClient');
+    // useSyncExternalStore 依赖 subscribe/getSnapshot 引用稳定:
+    // facade 每次新建会导致渲染→重订阅→快照替换的死循环。
+    expect(getPortSampleStore('facade', 'ch1')).toBe(getPortSampleStore('facade', 'ch1'));
+    expect(getPortSampleStore('facade', 'ch1')).not.toBe(getPortSampleStore('facade', 'ch2'));
+    expect(getPortSampleStore('facade-a', 'ch1')).not.toBe(getPortSampleStore('facade-b', 'ch1'));
+  });
+
+  it('returns one shared facade for invalid ports', async () => {
+    const { getPortSampleStore } = await import('../dataClient');
+    expect(getPortSampleStore(undefined, 'ch1')).toBe(getPortSampleStore('', undefined));
   });
 });

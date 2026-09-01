@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useAppStore } from '../../../store/appStore';
 import { t } from '../../../i18n';
+import { activateOnKeyboard } from '../../../lib/utils/a11y';
 import type { CanLoadSnapshot, CanIdLoadHistory } from '../../../types';
 
 /// 窗口预设
@@ -75,7 +76,7 @@ export function IdLoadDistribution({
   onSelectId: (id: number, extended: boolean) => void;
 }) {
   const lang = useAppStore.getState().lang;
-  const perId = snapshot?.per_id ?? [];
+  const perId = useMemo(() => snapshot?.per_id ?? [], [snapshot?.per_id]);
   const maxBits = perId.length > 0 ? perId[0].total_bits : 1;
 
   const totalBits = useMemo(() => perId.reduce((sum, s) => sum + s.total_bits, 0), [perId]);
@@ -112,6 +113,9 @@ export function IdLoadDistribution({
                     : 'border border-transparent hover:bg-bg-hover'
                 } ${selectedId && !isSelected ? 'opacity-50' : ''}`}
                 onClick={() => onSelectId(s.id, s.extended)}
+                onKeyDown={activateOnKeyboard}
+                role="button"
+                tabIndex={0}
                 title={t(lang, 'canLoadIdFilterHint')}
               >
                 <span className="text-text-bright truncate">
